@@ -1,0 +1,1545 @@
+diff --git a/common/arg.cpp b/common/arg.cpp
+index cc1a27cbf..a867840fa 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -2500,6 +2500,16 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+                 params.n_parallel = value;
+             }
+         ).set_env("LLAMA_ARG_N_PARALLEL").set_examples({LLAMA_EXAMPLE_SERVER}));
++        add_opt(common_arg(
++            {"--decision-seqs"}, "N",
++            string_format("sequences reserved for the /decision endpoint, above the slots; enables it (default: %d = disabled, minimum 3)", params.n_seq_decision),
++            [](common_params & params, int value) {
++                if (value != 0 && value < 3) {
++                    throw std::invalid_argument("--decision-seqs needs at least 3 (cached prefix, trunk, one branch)");
++                }
++                params.n_seq_decision = value;
++            }
++        ).set_env("LLAMA_ARG_DECISION_SEQS").set_examples({LLAMA_EXAMPLE_SERVER}));
+     } else {
+         add_opt(common_arg(
+             {"-np", "--parallel"}, "N",
+diff --git a/common/common.cpp b/common/common.cpp
+index d11d4fd61..8b3445b8b 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -1653,7 +1653,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
+     auto cparams = llama_context_default_params();
+ 
+     cparams.n_ctx             = params.n_ctx;
+-    cparams.n_seq_max         = params.n_parallel;
++    cparams.n_seq_max         = params.n_parallel + params.n_seq_decision; // decision sequences sit above the slots
+     cparams.n_outputs_max     = params.n_outputs_max;
+     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
+     cparams.n_outputs_max     = std::max(params.n_outputs_max, 0);
+diff --git a/common/common.h b/common/common.h
+index 2748efd66..036282695 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -453,6 +453,7 @@ struct common_params {
+     int32_t n_keep                =     0; // number of tokens to keep from initial prompt
+     int32_t n_chunks              =    -1; // max number of chunks to process (-1 = unlimited)
+     int32_t n_parallel            =     1; // number of parallel sequences to decode
++    int32_t n_seq_decision        =     0; // sequences reserved for llama-server's /decision endpoint (0 = disabled)
+     int32_t n_sequences           =     1; // number of sequences to decode
+     int32_t n_outputs_max         =     0; // max outputs in a batch (0 = n_batch)
+     int32_t grp_attn_n            =     1; // group-attention factor
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 9281e8ba7..636d5f352 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -2297,6 +2297,7 @@ common_params common_base_params_to_speculative(const common_params & params) {
+     result.cache_type_k  = params_spec.cache_type_k;
+     result.cache_type_v  = params_spec.cache_type_v;
+     result.n_outputs_max = params.n_parallel;
++    result.n_seq_decision = 0; // /decision runs on the target context only
+ 
+     return result;
+ }
+diff --git a/tools/CMakeLists.txt b/tools/CMakeLists.txt
+index 780df3266..f1391d2ca 100644
+--- a/tools/CMakeLists.txt
++++ b/tools/CMakeLists.txt
+@@ -18,6 +18,7 @@ else()
+     add_subdirectory(gguf-split)
+     add_subdirectory(imatrix)
+     add_subdirectory(llama-bench)
++    add_subdirectory(parallel-decision)
+     add_subdirectory(completion)
+     add_subdirectory(perplexity)
+     add_subdirectory(quantize)
+diff --git a/tools/parallel-decision/CMakeLists.txt b/tools/parallel-decision/CMakeLists.txt
+new file mode 100644
+index 000000000..f4d41d2f2
+--- /dev/null
++++ b/tools/parallel-decision/CMakeLists.txt
+@@ -0,0 +1,15 @@
++# shared engine: used by llama-parallel-decision and by llama-server's /decision endpoint
++add_library(llama-decision STATIC decision-engine.cpp decision-engine.h)
++target_include_directories(llama-decision PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
++target_link_libraries(llama-decision PUBLIC llama-common llama)
++target_compile_features(llama-decision PUBLIC cxx_std_17)
++# llama-server links it into a shared library (libllama-server-impl)
++set_target_properties(llama-decision PROPERTIES POSITION_INDEPENDENT_CODE ON)
++
++set(TARGET llama-parallel-decision)
++add_executable(${TARGET} parallel-decision.cpp)
++if(LLAMA_TOOLS_INSTALL)
++    install(TARGETS ${TARGET} RUNTIME)
++endif()
++target_link_libraries(${TARGET} PRIVATE llama-decision llama-common llama ${CMAKE_THREAD_LIBS_INIT})
++target_compile_features(${TARGET} PRIVATE cxx_std_17)
+diff --git a/tools/parallel-decision/README.md b/tools/parallel-decision/README.md
+new file mode 100644
+index 000000000..69c0dd119
+--- /dev/null
++++ b/tools/parallel-decision/README.md
+@@ -0,0 +1,132 @@
++# parallel-decision
++
++Answer a finite JSON schema in one batched forward pass, instead of generating the JSON token by token.
++
++Every field of a schema has a fixed set of allowed values (enums, booleans, bounded integers, numbers on a grid).
++After the context, each field's allowed values are scored as token paths that fork from the same KV cache, so all
++fields are answered in one `llama_decode` and cannot see each other. Each answer comes back with a probability, and
++the JSON object is assembled by code, so it always matches the schema.
++
++This directory holds the engine (`decision-engine.*`), a CLI (`llama-parallel-decision`), and the engine is also
++served by `llama-server` as `POST /v1/decision`.
++
++## Build
++
++Same as llama.cpp:
++
++```bash
++cmake -B build -DGGML_CUDA=ON        # or plain `cmake -B build` for CPU / Metal
++cmake --build build --config Release -j
++```
++
++## Run the server
++
++`--decision-seqs N` reserves the sequence slots the decisions need: one holds the cached instructions, one per context
++in flight, the rest are the parallel questions. It also switches the KV cache to unified, which is what lets the
++branches share the context's cells.
++
++```bash
++./build/bin/llama-server -m model.gguf -ngl 99 -fa on -c 32768 --decision-seqs 24 --port 8096
++```
++
++With a presets file, one loaded model serves chat and decisions:
++
++```ini
++[*]
++ngl = 99
++fa = on
++jinja = 1
++parallel = 1
++cache-type-k = q8_0
++cache-type-v = q8_0
++decision-seqs = 24
++
++[gemma-4-12b]
++model = ./models/gemma-4-12b-it-UD-Q4_K_XL.gguf
++ctx-size = 32768
++ubatch-size = 512
++decision-seqs = 12
++```
++
++```bash
++./build/bin/llama-server --models-preset models.ini --models-max 1 --port 8096
++```
++
++How many sequences a model affords depends on its attention. A plain-attention model shares the context's cells, so
++128 sequences cost almost nothing. A sliding-window model (Gemma) allocates its window per sequence, so keep it low
++(12 on a 12 GB card). Hybrid models with recurrent layers work, but llama.cpp splits their batches per sequence
++length, so branches run in several passes instead of one.
++
++## POST /v1/decision
++
++`contexts` is a list of 1-256 strings. They share one schema, one set of instructions, and one cached prefix; results
++come back in the same order.
++
++```bash
++curl http://localhost:8096/v1/decision -H "Content-Type: application/json" -d '{
++  "model": "gemma-4-12b",
++  "instructions": "Answer each question about this support request from its state.",
++  "schema": {
++    "category": {"type": "enum", "choices": ["billing","technical","cancellation","other"],
++                 "description": "What type of support request is this?"},
++    "urgent":   {"type": "boolean", "description": "Does this need urgent handling?"},
++    "priority": {"type": "enum", "choices": ["low","medium","high","critical"],
++                 "description": "Rate support priority."}
++  },
++  "contexts": ["I was charged twice and need this fixed today."]
++}'
++```
++
++```json
++{
++  "object": "decision",
++  "results": [
++    {
++      "decision": {"category": "billing", "urgent": true, "priority": "high"},
++      "fields": {
++        "category": {"value": "billing",  "probability": 1.0,  "scored_nodes": 1, "tree": true},
++        "urgent":   {"value": true,       "probability": 1.0,  "scored_nodes": 1, "tree": true},
++        "priority": {"value": "high",     "probability": 0.74, "scored_nodes": 1, "tree": true}
++      },
++      "usage": {"context_tokens": 21, "scored_rows": 14}
++    }
++  ],
++  "usage": {"prompt_tokens": 137, "cached_tokens": 116, "context_tokens": 21, "scored_rows": 14},
++  "timings": {"prefill_ms": 50.7, "scoring_ms": 50.0, "total_ms": 100.7, "rounds": 1, "per_decision_ms": 100.7}
++}
++```
++
++(That response is a real one: Gemma 4 12B on an RTX 3060, warm cache.)
++
++### Schema
++
++Compact fields, or a JSON Schema object with `properties`:
++
++| type | keys | notes |
++|---|---|---|
++| `enum` | `choices` (or `enum`) | 1-255 values |
++| `boolean` | - | true / false |
++| `integer` | `minimum`, `maximum` | 1-255 values |
++| `number` | `minimum`, `maximum`, `step` (`multipleOf` in JSON Schema) | fixed-width decimals |
++
++Numeric fields take `aggregate`: `mode` (default), `median` or `mean`.
++
++### Options
++
++| field | default | meaning |
++|---|---|---|
++| `instructions` | `""` | prepended to the generated field catalogue; cached with it |
++| `mode` | `auto` | `tree` scores every divergence node and returns exact probabilities; `greedy` walks the trie; `auto` picks tree up to `tree_max` values |
++| `tree_max` | 128 | per-field switch between tree and greedy |
++| `cache_prompt` | true | reuse the cached instructions + schema prefix |
++
++## CLI
++
++`llama-parallel-decision` runs the same engine from a worker process (stdin/stdout protocol, one JSON request per
++line). Environment: `DECIDE_TREE`, `DECIDE_TREE_MAX`, `DECIDE_NSEQ`, `DECIDE_SPLIT_BOUNDARY`.
++
++## A UI for it
++
++[decision-playground](https://github.com/thecodacus/decision-playground) is a browser-only playground: it talks
++straight to your llama-server, runs a decision and the same question as a chat completion side by side with live
++timers, and has a small game whose agents decide through the endpoint.
+diff --git a/tools/parallel-decision/decision-engine.cpp b/tools/parallel-decision/decision-engine.cpp
+new file mode 100644
+index 000000000..bc7a03048
+--- /dev/null
++++ b/tools/parallel-decision/decision-engine.cpp
+@@ -0,0 +1,729 @@
++#include "decision-engine.h"
++
++#include "chat.h"
++#include "common.h"
++
++#include <algorithm>
++#include <chrono>
++#include <cmath>
++#include <cstdio>
++#include <cstdlib>
++#include <stdexcept>
++
++namespace llama_decision {
++
++namespace {
++
++double ms_since(std::chrono::steady_clock::time_point t) {
++    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
++}
++
++struct decision_field {
++    tokens_t              suffix;
++    std::vector<tokens_t> paths;
++
++    std::vector<int> active;  // greedy walk
++    tokens_t         chosen;
++
++    std::vector<tokens_t> node_prefix;   // tree: trie nodes with more than one allowed next token
++    std::vector<tokens_t> node_options;
++    std::vector<float>    probs;
++
++    bool  use_tree     = false;
++    int   winner       = -1;
++    float path_score   = 1.0f;
++    int   scored_nodes = 0;
++
++    decision_field(tokens_t s, std::vector<tokens_t> p) : suffix(std::move(s)), paths(std::move(p)) {
++        for (int i = 0; i < (int) paths.size(); ++i) {
++            active.push_back(i);
++        }
++    }
++
++    // Greedy: follow single-path edges for free; return the options at the next divergence.
++    tokens_t options() {
++        while (active.size() > 1) {
++            const size_t depth = chosen.size();
++            tokens_t opts;
++            for (int i : active) {
++                if (depth >= paths[i].size()) {
++                    throw std::runtime_error("candidate paths must be distinct and terminated");
++                }
++                if (std::find(opts.begin(), opts.end(), paths[i][depth]) == opts.end()) {
++                    opts.push_back(paths[i][depth]);
++                }
++            }
++            if (opts.size() > 1) {
++                return opts;
++            }
++            chosen.push_back(opts[0]);
++        }
++        winner = active.empty() ? -1 : active[0];
++        return {};
++    }
++
++    void select(llama_token tok, float p) {
++        const size_t depth = chosen.size();
++        std::vector<int> remaining;
++        for (int i : active) {
++            if (paths[i][depth] == tok) {
++                remaining.push_back(i);
++            }
++        }
++        active = remaining;
++        chosen.push_back(tok);
++        path_score *= p;
++        scored_nodes += 1;
++    }
++
++    void build_nodes() {
++        std::vector<std::pair<std::vector<int>, size_t>> stack;
++        std::vector<int> root(paths.size());
++        for (int i = 0; i < (int) paths.size(); ++i) {
++            root[i] = i;
++        }
++        stack.push_back({ root, 0 });
++        while (!stack.empty()) {
++            auto [act, depth] = stack.back();
++            stack.pop_back();
++            if (act.size() <= 1) {
++                continue;
++            }
++            tokens_t opts;
++            for (int i : act) {
++                if (depth >= paths[i].size()) {
++                    throw std::runtime_error("candidate paths must be distinct and terminated");
++                }
++                if (std::find(opts.begin(), opts.end(), paths[i][depth]) == opts.end()) {
++                    opts.push_back(paths[i][depth]);
++                }
++            }
++            if (opts.size() > 1) {
++                node_prefix.emplace_back(paths[act[0]].begin(), paths[act[0]].begin() + depth);
++                node_options.push_back(opts);
++            }
++            for (llama_token tok : opts) {
++                std::vector<int> sub;
++                for (int i : act) {
++                    if (paths[i][depth] == tok) {
++                        sub.push_back(i);
++                    }
++                }
++                stack.push_back({ sub, depth + 1 });
++            }
++        }
++    }
++
++    int tree_rows() const {
++        int n = 0;
++        for (const auto & p : node_prefix) {
++            n += (int) (suffix.size() + p.size());
++        }
++        return n;
++    }
++
++    // Exact constrained distribution: log-softmax at each node over its allowed tokens,
++    // summed along every candidate path, normalised over candidates.
++    void finish_tree(const std::vector<std::vector<float>> & node_scores) {
++        std::vector<std::vector<float>> node_logp;
++        for (const auto & s : node_scores) {
++            const float mx = *std::max_element(s.begin(), s.end());
++            double z = 0;
++            for (float x : s) {
++                z += std::exp(x - mx);
++            }
++            const float lz = mx + (float) std::log(z);
++            std::vector<float> lp;
++            for (float x : s) {
++                lp.push_back(x - lz);
++            }
++            node_logp.push_back(lp);
++        }
++        std::vector<float> path_lp(paths.size(), 0.0f);
++        for (size_t i = 0; i < paths.size(); ++i) {
++            for (size_t n = 0; n < node_prefix.size(); ++n) {
++                const auto & pre = node_prefix[n];
++                if (pre.size() >= paths[i].size() || !std::equal(pre.begin(), pre.end(), paths[i].begin())) {
++                    continue;
++                }
++                const auto & opts = node_options[n];
++                const auto   it   = std::find(opts.begin(), opts.end(), paths[i][pre.size()]);
++                if (it == opts.end()) {
++                    throw std::runtime_error("candidate token missing from its trie node");
++                }
++                path_lp[i] += node_logp[n][it - opts.begin()];
++            }
++        }
++        const int best = (int) (std::max_element(path_lp.begin(), path_lp.end()) - path_lp.begin());
++        double z = 0;
++        for (float x : path_lp) {
++            z += std::exp(x - path_lp[best]);
++        }
++        probs.clear();
++        for (float x : path_lp) {
++            probs.push_back((float) (std::exp(x - path_lp[best]) / z));
++        }
++        winner       = best;
++        path_score   = probs[best];
++        scored_nodes = (int) node_prefix.size();
++    }
++};
++
++} // namespace
++
++// ---------------------------------------------------------------- engine
++
++engine::engine(llama_context * ctx, llama_seq_id seq_base, int n_seqs)
++    : ctx(ctx), vocab(llama_model_get_vocab(llama_get_model(ctx))), mem(llama_get_memory(ctx)),
++      seq_snap(seq_base), seq_pool(seq_base + 1), n_pool(n_seqs - 1) {
++    if (n_seqs < 3) {
++        throw std::invalid_argument("a decision engine needs at least 3 sequences");
++    }
++}
++
++tokens_t engine::tokenize(const std::string & text, bool add_special) const {
++    tokens_t toks = common_tokenize(vocab, text, add_special, /*parse_special=*/ true);
++    // a chat template may already start with the BOS text; keep a single BOS
++    const llama_token bos = llama_vocab_bos(vocab);
++    if (toks.size() >= 2 && toks[0] == bos && toks[1] == bos) {
++        toks.erase(toks.begin());
++    }
++    return toks;
++}
++
++// Decode several prompts, each on its own sequence, packed into as few batches as n_batch allows.
++void engine::decode_parts(const std::vector<prompt_part> & parts) {
++    const int n_batch = (int) llama_n_batch(ctx);
++    llama_batch batch = llama_batch_init(n_batch, 0, 1);
++    auto flush = [&]() {
++        const int rc = batch.n_tokens > 0 ? llama_decode(ctx, batch) : 0;
++        common_batch_clear(batch);
++        if (rc != 0) {
++            llama_batch_free(batch);
++            throw std::runtime_error(rc == 1 ? "no free KV cache space for the decision prompt"
++                                             : "llama_decode failed on the decision prompt (" + std::to_string(rc) + ")");
++        }
++    };
++    for (const auto & p : parts) {
++        for (size_t i = 0; i < p.toks->size(); ++i) {
++            if (batch.n_tokens == n_batch) {
++                flush();
++            }
++            common_batch_add(batch, (*p.toks)[i], p.pos0 + (llama_pos) i, { p.seq }, false);
++        }
++    }
++    flush();
++    llama_batch_free(batch);
++}
++
++// Restore (or build) the cached static prefix on seq_snap. Only this engine's own sequences are
++// touched, so it can share a context with other users (e.g. server slots).
++bool engine::prepare_prefix(const tokens_t & shared, bool allow_cache) {
++    if (allow_cache && !shared.empty() && shared == cached &&
++        llama_memory_seq_pos_max(mem, seq_snap) == (llama_pos) cached.size() - 1) {
++        return true;
++    }
++    for (llama_seq_id s = seq_snap; s < seq_pool + n_pool; ++s) {
++        llama_memory_seq_rm(mem, s, -1, -1);
++    }
++    cached.clear();
++    if (!shared.empty()) {
++        decode_parts({ { &shared, 0, seq_snap } });
++        cached = shared;
++    }
++    return false;
++}
++
++// Score each branch as its own sequence forked from its trunk; return each branch's last-token
++// logits restricted to its candidate tokens. Groups are bounded by free sequences and batch rows.
++std::vector<std::vector<float>> engine::score_branches(const std::vector<branch> & branches, llama_seq_id first, int n_free) {
++    std::vector<std::vector<float>> result(branches.size());
++    const int max_rows = (int) llama_n_batch(ctx);
++    size_t start = 0;
++    while (start < branches.size()) {
++        size_t end  = start;
++        int    rows = 0;
++        while (end < branches.size() && (int) (end - start) < n_free && rows + (int) branches[end].toks.size() <= max_rows) {
++            rows += (int) branches[end].toks.size();
++            ++end;
++        }
++        if (end == start) {
++            throw std::runtime_error("a decision suffix exceeds the batch size");
++        }
++        llama_batch batch = llama_batch_init(rows, 0, 1);
++        std::vector<int> out_idx;
++        for (size_t b = start; b < end; ++b) {
++            const llama_seq_id seq = first + (llama_seq_id) (b - start);
++            llama_memory_seq_rm(mem, seq, -1, -1);
++            llama_memory_seq_cp(mem, branches[b].trunk, seq, -1, -1);
++            const auto & toks = branches[b].toks;
++            for (size_t i = 0; i < toks.size(); ++i) {
++                const bool last = i + 1 == toks.size();
++                if (last) {
++                    out_idx.push_back(batch.n_tokens);
++                }
++                common_batch_add(batch, toks[i], branches[b].pos0 + (llama_pos) i, { seq }, last);
++            }
++        }
++        const int rc = llama_decode(ctx, batch);
++        llama_batch_free(batch);
++        if (rc != 0) {
++            throw std::runtime_error(rc == 1 ? "no free KV cache space for the decision branches"
++                                             : "llama_decode failed on the decision branches (" + std::to_string(rc) + ")");
++        }
++        for (size_t b = start; b < end; ++b) {
++            const float * logits = llama_get_logits_ith(ctx, out_idx[b - start]);
++            for (llama_token t : branches[b].cands) {
++                result[b].push_back(logits[t]);
++            }
++            llama_memory_seq_rm(mem, first + (llama_seq_id) (b - start), -1, -1);
++        }
++        start = end;
++    }
++    return result;
++}
++
++result engine::decide(const std::string & shared_text, const std::string & context_text,
++                      const std::vector<field_input> & inputs, const options & opt) {
++    batch_result b = decide_batch(shared_text, { context_text }, inputs, opt);
++    result r = std::move(b.items[0]);
++    r.cache_hit     = b.cache_hit;
++    r.shared_tokens = b.shared_tokens;
++    r.rounds        = b.rounds;
++    r.prefill_ms    = b.prefill_ms;
++    r.scoring_ms    = b.scoring_ms;
++    return r;
++}
++
++batch_result engine::decide_batch(const std::string & shared_text, const std::vector<std::string> & contexts,
++                                  const std::vector<field_input> & inputs, const options & opt) {
++    if (opt.mode != "auto" && opt.mode != "tree" && opt.mode != "greedy") {
++        throw std::invalid_argument("mode must be auto, tree or greedy");
++    }
++    if (contexts.empty()) {
++        throw std::invalid_argument("a decision needs at least one context");
++    }
++    const tokens_t shared = tokenize(shared_text, true);
++    std::vector<tokens_t> prefixes;
++    for (const auto & text : contexts) {
++        prefixes.push_back(tokenize(text, shared.empty()));
++        if (prefixes.back().empty()) {
++            throw std::invalid_argument("the decision context must not be empty");
++        }
++    }
++
++    std::vector<decision_field> fields;
++    int total    = 0;
++    int branches = 0; // round-1 branches of one context
++    for (const auto & in : inputs) {
++        const size_t n = in.candidates.size();
++        if (n < 1 || n > 255) {
++            throw std::invalid_argument("each field needs 1-255 allowed values");
++        }
++        tokens_t suffix;
++        std::vector<tokens_t> paths;
++        if (opt.split_boundary) {
++            for (const auto & c : in.candidates) {
++                paths.push_back(tokenize(c + "\n", false));
++            }
++            suffix = tokenize(in.suffix, false);
++        } else {
++            // Tokenise each complete "suffix + value + terminator" and split at the longest token
++            // prefix shared by every candidate: the value's first token is exactly what the model
++            // would write itself (e.g. `":` then ` true`, not `": ` then `true`).
++            std::vector<tokens_t> seqs;
++            for (const auto & c : in.candidates) {
++                seqs.push_back(tokenize(in.suffix + c + "\n", false));
++            }
++            size_t common = seqs[0].size();
++            for (const auto & s : seqs) {
++                size_t c = 0;
++                while (c < std::min(common, s.size()) && s[c] == seqs[0][c]) {
++                    ++c;
++                }
++                common = std::min({ common, c, s.size() - 1 });
++            }
++            suffix.assign(seqs[0].begin(), seqs[0].begin() + common);
++            for (const auto & s : seqs) {
++                paths.emplace_back(s.begin() + common, s.end());
++            }
++        }
++        if (suffix.empty()) {
++            throw std::invalid_argument("a field suffix must not be empty");
++        }
++        size_t max_path = 0;
++        for (size_t a = 0; a < paths.size(); ++a) {
++            max_path = std::max(max_path, paths[a].size());
++            for (size_t b = 0; b < a; ++b) {
++                const size_t m = std::min(paths[a].size(), paths[b].size());
++                if (std::equal(paths[a].begin(), paths[a].begin() + m, paths[b].begin())) {
++                    throw std::invalid_argument("two allowed values tokenise to colliding paths");
++                }
++            }
++        }
++        decision_field field(suffix, paths);
++        field.build_nodes();
++        field.use_tree = opt.mode == "tree" ? true : opt.mode == "greedy" ? false : n <= opt.tree_max;
++        total    += field.use_tree ? field.tree_rows() : (int) (suffix.size() + max_path);
++        branches += field.use_tree ? (int) field.node_prefix.size() : 1;
++        fields.push_back(std::move(field));
++    }
++
++    batch_result out;
++    out.shared_tokens = shared.size();
++    out.rows          = total * (int) contexts.size();
++    out.items.resize(contexts.size());
++
++    const auto t0 = std::chrono::steady_clock::now();
++    out.cache_hit = prepare_prefix(shared, opt.allow_cache);
++    out.prefill_ms += ms_since(t0);
++
++    // each context in a group holds one trunk sequence; the rest of the pool scores branches
++    const size_t per_group = std::clamp<size_t>(n_pool / (1 + branches), 1, contexts.size());
++    for (size_t g0 = 0; g0 < contexts.size(); g0 += per_group) {
++        const size_t n_group = std::min(per_group, contexts.size() - g0);
++
++        const auto tp = std::chrono::steady_clock::now();
++        std::vector<prompt_part> parts;
++        for (size_t i = 0; i < n_group; ++i) {
++            const llama_seq_id trunk = seq_pool + (llama_seq_id) i;
++            llama_memory_seq_rm(mem, trunk, -1, -1);
++            if (!shared.empty()) {
++                llama_memory_seq_cp(mem, seq_snap, trunk, -1, -1);
++            }
++            parts.push_back({ &prefixes[g0 + i], (llama_pos) shared.size(), trunk });
++        }
++        decode_parts(parts);
++        llama_synchronize(ctx); // llama_decode is asynchronous: wait for the prefill so its time isn't billed to scoring
++        out.prefill_ms += ms_since(tp);
++
++        // round 1 carries every tree node and each greedy field's first step; later rounds only
++        // continue greedy fields that are still open
++        const auto ts = std::chrono::steady_clock::now();
++        std::vector<std::vector<decision_field>> state(n_group, fields);
++        bool first = true;
++        while (true) {
++            std::vector<branch> todo;
++            std::vector<std::pair<size_t, size_t>> owner; // (context in group, field)
++            for (size_t i = 0; i < n_group; ++i) {
++                const llama_seq_id trunk = seq_pool + (llama_seq_id) i;
++                const llama_pos    pos0  = (llama_pos) (shared.size() + prefixes[g0 + i].size());
++                for (size_t f = 0; f < state[i].size(); ++f) {
++                    auto & fd = state[i][f];
++                    if (fd.use_tree) {
++                        if (first) {
++                            for (size_t n = 0; n < fd.node_prefix.size(); ++n) {
++                                tokens_t ids = fd.suffix;
++                                ids.insert(ids.end(), fd.node_prefix[n].begin(), fd.node_prefix[n].end());
++                                todo.push_back({ trunk, pos0, ids, fd.node_options[n] });
++                                owner.push_back({ i, f });
++                            }
++                        }
++                    } else {
++                        tokens_t opts = fd.options();
++                        if (!opts.empty()) {
++                            tokens_t ids = fd.suffix;
++                            ids.insert(ids.end(), fd.chosen.begin(), fd.chosen.end());
++                            todo.push_back({ trunk, pos0, ids, opts });
++                            owner.push_back({ i, f });
++                        }
++                    }
++                }
++            }
++            if (todo.empty()) {
++                break;
++            }
++            const auto scores = score_branches(todo, seq_pool + (llama_seq_id) n_group, n_pool - (int) n_group);
++            out.rounds += 1;
++            std::vector<std::vector<std::vector<std::vector<float>>>> tree_scores(n_group, std::vector<std::vector<std::vector<float>>>(fields.size()));
++            for (size_t row = 0; row < owner.size(); ++row) {
++                const auto [i, f] = owner[row];
++                auto & fd = state[i][f];
++                if (fd.use_tree) {
++                    tree_scores[i][f].push_back(scores[row]);
++                } else {
++                    const auto & s    = scores[row];
++                    const int    best = (int) (std::max_element(s.begin(), s.end()) - s.begin());
++                    double denom = 0;
++                    for (float x : s) {
++                        denom += std::exp(x - s[best]);
++                    }
++                    fd.select(todo[row].cands[best], (float) (1.0 / denom));
++                }
++            }
++            if (first) {
++                for (size_t i = 0; i < n_group; ++i) {
++                    for (size_t f = 0; f < fields.size(); ++f) {
++                        if (state[i][f].use_tree) {
++                            state[i][f].finish_tree(tree_scores[i][f]);
++                        }
++                    }
++                }
++            }
++            first = false;
++        }
++        for (size_t i = 0; i < n_group; ++i) {
++            llama_memory_seq_rm(mem, seq_pool + (llama_seq_id) i, -1, -1);
++            result & r = out.items[g0 + i];
++            r.context_tokens = prefixes[g0 + i].size();
++            r.rows           = total;
++            for (auto & fd : state[i]) {
++                if (fd.use_tree && fd.probs.empty()) {
++                    fd.finish_tree({});
++                }
++                r.fields.push_back({ fd.winner, fd.path_score, fd.scored_nodes, fd.use_tree, fd.probs });
++            }
++        }
++        out.scoring_ms += ms_since(ts);
++    }
++    return out;
++}
++
++// ---------------------------------------------------------------- schema compiler
++
++namespace {
++
++int decimal_places(double x) {
++    for (int k = 0; k <= 9; ++k) {
++        const double v = x * std::pow(10.0, k);
++        if (std::fabs(v - std::llround(v)) < 1e-9 * std::max(1.0, std::fabs(v))) {
++            return k;
++        }
++    }
++    return 9;
++}
++
++std::string json_text(const std::string & s) {
++    return common_json(s).dump();
++}
++
++field_spec make_field(const std::string & name, const std::string & type, const std::string & description,
++                      const common_json & spec, bool json_schema) {
++    field_spec f;
++    f.name        = name;
++    f.description = description;
++    const std::string kind = type;
++    if (kind == "boolean") {
++        f.type    = "boolean";
++        f.values  = { common_json(true), common_json(false) };
++        f.encoded = { "true", "false" };
++    } else if (kind == "enum" || kind == "choice" || kind == "selection") {
++        const char * key = spec.contains("enum") ? "enum" : "choices";
++        if (!spec.contains(key) || !spec.at(key).is_array()) {
++            throw std::invalid_argument("field \"" + name + "\": enum fields need a list of choices");
++        }
++        f.type = "enum";
++        for (const auto & c : spec.at(key)) {
++            if (!c.is_string()) {
++                throw std::invalid_argument("field \"" + name + "\": enum choices must be strings");
++            }
++            const std::string v = c.get<std::string>();
++            f.values.push_back(common_json(v));
++            f.encoded.push_back(json_text(v));
++        }
++    } else if (kind == "integer") {
++        if (!spec.contains("minimum") || !spec.contains("maximum") ||
++            !spec.at("minimum").is_number_integer() || !spec.at("maximum").is_number_integer()) {
++            throw std::invalid_argument("field \"" + name + "\": integer fields need integer minimum and maximum");
++        }
++        const long long lo = spec.at("minimum").get<long long>(), hi = spec.at("maximum").get<long long>();
++        if (hi < lo || hi - lo + 1 > 255) {
++            throw std::invalid_argument("field \"" + name + "\": integer bounds must define 1-255 values");
++        }
++        f.type = "integer";
++        for (long long v = lo; v <= hi; ++v) {
++            f.values.push_back(common_json(v));
++            f.encoded.push_back(std::to_string(v));
++            f.numbers.push_back((double) v);
++        }
++    } else if (kind == "number") {
++        const char * step_key = json_schema ? "multipleOf" : "step";
++        if (!spec.contains("minimum") || !spec.contains("maximum") || !spec.contains(step_key)) {
++            throw std::invalid_argument("field \"" + name + "\": number fields need minimum, maximum and " + step_key);
++        }
++        const double lo = spec.at("minimum").get<double>(), hi = spec.at("maximum").get<double>(),
++                     step = spec.at(step_key).get<double>();
++        if (!(step > 0) || !(hi >= lo)) {
++            throw std::invalid_argument("field \"" + name + "\": number needs ordered bounds and a positive step");
++        }
++        const double    count = (hi - lo) / step;
++        const long long n     = std::llround(count);
++        if (std::fabs(count - (double) n) > 1e-7 || n < 0 || n > 254) {
++            throw std::invalid_argument("field \"" + name + "\": the number grid must include both ends and hold 1-255 values");
++        }
++        const int places = std::max({ decimal_places(lo), decimal_places(hi), decimal_places(step) });
++        f.type = "number";
++        for (long long i = 0; i <= n; ++i) {
++            char buf[64];
++            std::snprintf(buf, sizeof(buf), "%.*f", places, lo + (double) i * step);
++            const double v = std::strtod(buf, nullptr);
++            f.values.push_back(common_json(v));
++            f.encoded.push_back(buf); // fixed width: every value has the same shape
++            f.numbers.push_back(v);
++        }
++    } else {
++        throw std::invalid_argument("field \"" + name + "\": supported types are boolean, enum, integer and number");
++    }
++    if (f.values.empty() || f.values.size() > 255) {
++        throw std::invalid_argument("field \"" + name + "\" needs 1-255 allowed values");
++    }
++    for (size_t a = 0; a < f.encoded.size(); ++a) {
++        for (size_t b = 0; b < a; ++b) {
++            if (f.encoded[a] == f.encoded[b]) {
++                throw std::invalid_argument("field \"" + name + "\" has duplicate allowed values");
++            }
++        }
++    }
++    const std::string agg = spec.value("aggregate", spec.value("x-aggregate", std::string("mode")));
++    const bool numeric = f.type == "integer" || f.type == "number";
++    if (agg != "mode" && !(numeric && (agg == "median" || agg == "mean"))) {
++        throw std::invalid_argument("field \"" + name + "\": aggregate must be mode, or median/mean for numeric fields");
++    }
++    f.aggregate = agg;
++    return f;
++}
++
++} // namespace
++
++compiled_schema compile_schema(const common_json & schema, const std::string & instructions) {
++    if (!schema.is_object()) {
++        throw std::invalid_argument("\"schema\" must be an object");
++    }
++    compiled_schema cs;
++    const bool json_schema = schema.contains("properties");
++    const common_json & props = json_schema ? schema.at("properties") : schema;
++    if (!props.is_object() || props.size() < 1 || props.size() > 32) {
++        throw std::invalid_argument("the schema must define 1-32 fields");
++    }
++    for (const auto & e : props.items()) {
++        const common_json & spec = e.value();
++        if (!spec.is_object()) {
++            throw std::invalid_argument("field \"" + e.key() + "\" must be an object");
++        }
++        std::string type = spec.value("type", std::string());
++        if (spec.contains("enum")) {
++            type = "enum";
++        }
++        std::string description = spec.value("description", std::string());
++        if (!json_schema && description.empty()) {
++            throw std::invalid_argument("field \"" + e.key() + "\" needs a description");
++        }
++        cs.specs.push_back(make_field(e.key(), type, description, spec, json_schema));
++    }
++
++    std::string catalog;
++    for (const auto & f : cs.specs) {
++        // the value's common leading characters are fixed in the suffix; only the rest is scored
++        std::string common = f.encoded[0];
++        for (const auto & v : f.encoded) {
++            size_t c = 0;
++            while (c < std::min(common.size(), v.size()) && common[c] == v[c]) {
++                ++c;
++            }
++            common.resize(c);
++        }
++        field_input in;
++        in.suffix = "  " + json_text(f.name) + ": " + common;
++        for (const auto & v : f.encoded) {
++            in.candidates.push_back(v.substr(common.size()));
++        }
++        cs.inputs.push_back(in);
++
++        std::string allowed;
++        for (size_t i = 0; i < f.encoded.size(); ++i) {
++            allowed += (i ? ", " : "") + f.encoded[i];
++        }
++        catalog += (catalog.empty() ? "" : "\n") + json_text(f.name) + (f.description.empty() ? "" : ": " + f.description) +
++                   "\nAllowed values: " + allowed;
++    }
++    cs.system_text = "Select the requested field value from its allowed values, based on the context. "
++                     "Respond with the JSON value only.\n\nFields:\n" + catalog + "\n" + instructions;
++    return cs;
++}
++
++std::pair<std::string, std::string> render_prompt(const common_chat_templates * tmpls, bool use_jinja,
++                                                  const std::string & system_text, const std::string & context) {
++    if (tmpls == nullptr) {
++        return { system_text + "\nContext:\n", context + "\nOutput:\n{\n" };
++    }
++    static const std::string sentinel = "\x1f<<decision-context>>\x1f";
++    common_chat_templates_inputs in;
++    in.use_jinja             = use_jinja;
++    in.add_generation_prompt = true;
++    in.enable_thinking       = false;
++    common_chat_msg sys;
++    sys.role    = "system";
++    sys.content = system_text;
++    common_chat_msg usr;
++    usr.role    = "user";
++    usr.content = sentinel;
++    in.messages = { sys, usr };
++    const std::string prompt = common_chat_templates_apply(tmpls, in).prompt;
++    const size_t at = prompt.find(sentinel);
++    if (at == std::string::npos) {
++        throw std::runtime_error("the chat template did not keep the user message");
++    }
++    return { prompt.substr(0, at), context + prompt.substr(at + sentinel.size()) + "{\n" };
++}
++
++common_json assemble(const compiled_schema & cs, const result & r) {
++    common_json decision = common_json::object();
++    common_json fields   = common_json::object();
++    for (size_t i = 0; i < cs.specs.size(); ++i) {
++        const auto & sp = cs.specs[i];
++        const auto & fr = r.fields[i];
++        int idx = fr.winner;
++        common_json f = common_json::object();
++        const bool numeric = !sp.numbers.empty();
++        if (numeric && fr.probs.size() == sp.values.size()) {
++            std::vector<int> order(sp.values.size());
++            for (size_t k = 0; k < order.size(); ++k) {
++                order[k] = (int) k;
++            }
++            std::sort(order.begin(), order.end(), [&](int a, int b) { return sp.numbers[a] < sp.numbers[b]; });
++            auto quantile = [&](double q) {
++                double acc = 0;
++                for (int k : order) {
++                    acc += fr.probs[k];
++                    if (acc >= q) {
++                        return k;
++                    }
++                }
++                return order.back();
++            };
++            double mean = 0;
++            for (size_t k = 0; k < sp.numbers.size(); ++k) {
++                mean += sp.numbers[k] * fr.probs[k];
++            }
++            if (sp.aggregate == "median") {
++                idx = quantile(0.5);
++            } else if (sp.aggregate == "mean") {
++                idx = 0;
++                for (size_t k = 1; k < sp.numbers.size(); ++k) {
++                    if (std::fabs(sp.numbers[k] - mean) < std::fabs(sp.numbers[idx] - mean)) {
++                        idx = (int) k;
++                    }
++                }
++            }
++            common_json interval = common_json::array();
++            interval.push_back(sp.values[quantile(0.1)]);
++            interval.push_back(sp.values[quantile(0.9)]);
++            f["interval_p10_p90"] = interval;
++        }
++        if (idx < 0 || idx >= (int) sp.values.size()) {
++            throw std::runtime_error("field \"" + sp.name + "\" has no selected value");
++        }
++        decision[sp.name] = sp.values[idx];
++        f["value"]        = sp.values[idx];
++        f["probability"]  = (double) (fr.probs.size() == sp.values.size() ? fr.probs[idx] : fr.path_score);
++        f["scored_nodes"] = fr.scored_nodes;
++        f["tree"]         = fr.tree;
++        fields[sp.name]   = f;
++    }
++    common_json out = common_json::object();
++    out["decision"] = decision;
++    out["fields"]   = fields;
++    return out;
++}
++
++} // namespace llama_decision
+diff --git a/tools/parallel-decision/decision-engine.h b/tools/parallel-decision/decision-engine.h
+new file mode 100644
+index 000000000..e0e317afb
+--- /dev/null
++++ b/tools/parallel-decision/decision-engine.h
+@@ -0,0 +1,145 @@
++#pragma once
++
++// Parallel constrained decisions for finite JSON schemas, shared by llama-parallel-decision
++// and llama-server's /decision endpoint.
++//
++// Every field of a schema has a finite set of allowed values. After a shared context, each
++// field's value is scored as token paths following that field's own suffix; every scored path
++// runs as its own sequence forked from the context (llama_memory_seq_cp), so all fields are
++// evaluated in one batched llama_decode and cannot see each other. Small fields score every
++// divergence node of their token trie at once and return the exact constrained distribution;
++// larger fields walk the trie greedily.
++
++#include "llama.h"
++
++#include <nlohmann/json.hpp>
++
++#include <string>
++#include <utility>
++#include <vector>
++
++struct common_chat_templates;
++
++using common_json = nlohmann::ordered_json;
++
++namespace llama_decision {
++
++using tokens_t = std::vector<llama_token>;
++
++// One field as the scorer sees it: the text before its value and the allowed value texts.
++struct field_input {
++    std::string              suffix;     // e.g.  '  "fire": '
++    std::vector<std::string> candidates; // allowed values, with the suffix's shared prefix removed
++};
++
++struct options {
++    std::string mode           = "auto"; // auto: tree up to tree_max values, else greedy; tree; greedy
++    size_t      tree_max       = 128;
++    bool        split_boundary = false;  // legacy: tokenise suffix and values separately
++    bool        allow_cache    = true;   // reuse the cached static prefix when it matches
++};
++
++struct field_result {
++    int                winner       = -1;
++    float              path_score   = 1.0f;
++    int                scored_nodes = 0;
++    bool               tree         = false;
++    std::vector<float> probs;            // tree fields: probability of every allowed value
++};
++
++struct result {
++    std::vector<field_result> fields;
++    bool   cache_hit      = false;
++    size_t shared_tokens  = 0;
++    size_t context_tokens = 0;
++    int    rows           = 0;
++    int    rounds         = 0;
++    double prefill_ms     = 0;
++    double scoring_ms     = 0;
++};
++
++// Several contexts decided against one schema and one cached prefix. Items carry fields,
++// context_tokens and rows; timings and cache state cover the whole batch.
++struct batch_result {
++    std::vector<result> items;
++    bool   cache_hit     = false;
++    size_t shared_tokens = 0;
++    int    rows          = 0;
++    int    rounds        = 0;
++    double prefill_ms    = 0;
++    double scoring_ms    = 0;
++};
++
++// Scores decisions on an existing context with the sequence ids [seq_base, seq_base + n_seqs):
++// one keeps the cached static prefix; the rest hold one trunk (prefix + context) per context in
++// flight, then branches. The context needs a unified KV cache so branches share the trunk's cells.
++class engine {
++  public:
++    engine(llama_context * ctx, llama_seq_id seq_base, int n_seqs);
++
++    result decide(const std::string & shared_text, const std::string & context_text,
++                  const std::vector<field_input> & fields, const options & opt);
++
++    // Contexts are prefilled together and their branches scored together, in groups sized to fit
++    // the sequence budget; results keep the order of the contexts.
++    batch_result decide_batch(const std::string & shared_text, const std::vector<std::string> & contexts,
++                              const std::vector<field_input> & fields, const options & opt);
++
++  private:
++    struct prompt_part {
++        const tokens_t * toks;
++        llama_pos        pos0;
++        llama_seq_id     seq;
++    };
++    struct branch {
++        llama_seq_id trunk;
++        llama_pos    pos0;
++        tokens_t     toks;
++        tokens_t     cands;
++    };
++
++    llama_context     * ctx;
++    const llama_vocab * vocab;
++    llama_memory_t      mem;
++    llama_seq_id        seq_snap, seq_pool;
++    int                 n_pool;
++    tokens_t            cached;
++
++    tokens_t tokenize(const std::string & text, bool add_special) const;
++    void     decode_parts(const std::vector<prompt_part> & parts);
++    bool     prepare_prefix(const tokens_t & shared, bool allow_cache);
++    std::vector<std::vector<float>> score_branches(const std::vector<branch> & branches, llama_seq_id first, int n_free);
++};
++
++// ---- schema compiler (the C++ counterpart of llama-mojo's tools/prepare_decisions.py)
++
++struct field_spec {
++    std::string              name;
++    std::string              type;        // boolean | enum | integer | number
++    std::string              description;
++    std::string              aggregate;   // mode | median | mean (median/mean: numeric fields)
++    std::vector<common_json> values;      // typed values; index = candidate index
++    std::vector<double>      numbers;     // numeric fields: the same values as doubles
++    std::vector<std::string> encoded;     // JSON text of each value
++};
++
++struct compiled_schema {
++    std::string              system_text; // fixed instructions + field catalogue (cacheable)
++    std::vector<field_spec>  specs;
++    std::vector<field_input> inputs;
++};
++
++// Accepts compact field specs {"name": {"type": ..., "description": ..., ...}} or a JSON Schema
++// object with "properties" (boolean, string+enum, integer min/max, number min/max/multipleOf).
++compiled_schema compile_schema(const common_json & schema, const std::string & instructions);
++
++// Renders system + user messages with the model's chat template (thinking disabled) and splits
++// the prompt into the static prefix (cached across requests) and the per-request part: the
++// context, the generation prompt and the opening brace of the JSON answer.
++std::pair<std::string, std::string> render_prompt(const common_chat_templates * tmpls, bool use_jinja,
++                                                  const std::string & system_text, const std::string & context);
++
++// {"decision": {...}, "fields": {...}} from the scores, applying each numeric field's aggregate.
++common_json assemble(const compiled_schema & cs, const result & r);
++
++} // namespace llama_decision
+diff --git a/tools/parallel-decision/parallel-decision.cpp b/tools/parallel-decision/parallel-decision.cpp
+new file mode 100644
+index 000000000..c335b0910
+--- /dev/null
++++ b/tools/parallel-decision/parallel-decision.cpp
+@@ -0,0 +1,164 @@
++// Parallel constrained decisions from prepared request files (see decision-engine.h).
++//
++// Protocol (compatible with llama-mojo's decide-worker and its tools/prepare_decisions.py):
++//   llama-parallel-decision MODEL N_CPU_MOE --worker N_CTX N_BATCH [STREAM_MIN [GEMM_MIN [THREADS]]]
++//   stdin : one request per line, tab separated: @shared|@fresh STATIC CONTEXT FIELD...
++//           each FIELD file: a count N, N allowed-value lines, then the field's suffix
++//   stdout: prefill_ms .. suffix_scoring_ms .. decision_rounds .., RESULT_JSON, <json>, WORKER_DONE
++// STREAM_MIN and GEMM_MIN are llama-mojo tuning knobs; they are accepted and ignored here.
++// Environment: DECIDE_TREE (1 = tree, 0 = greedy, unset = auto), DECIDE_TREE_MAX (default 128),
++// DECIDE_SPLIT_BOUNDARY=1 (legacy tokenisation), DECIDE_NSEQ (sequences, default 24).
++
++#include "decision-engine.h"
++
++#include "common.h"
++#include "llama.h"
++
++#include <cstdio>
++#include <cstdlib>
++#include <fstream>
++#include <iostream>
++#include <sstream>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++static std::string env_str(const char * name) {
++    const char * v = std::getenv(name);
++    return v ? v : "";
++}
++
++static std::string read_file(const std::string & path) {
++    std::ifstream f(path, std::ios::binary);
++    if (!f) {
++        throw std::runtime_error("cannot open " + path);
++    }
++    std::stringstream ss;
++    ss << f.rdbuf();
++    return ss.str();
++}
++
++static void decide_files(llama_decision::engine & eng, const std::vector<std::string> & files) {
++    if (files.size() < 4 || (files[0] != "@shared" && files[0] != "@fresh")) {
++        throw std::runtime_error("request: @shared|@fresh STATIC CONTEXT FIELD...");
++    }
++    llama_decision::options opt;
++    const std::string tree = env_str("DECIDE_TREE");
++    opt.mode           = tree == "1" ? "tree" : tree == "0" ? "greedy" : "auto";
++    opt.tree_max       = env_str("DECIDE_TREE_MAX").empty() ? 128 : std::stoul(env_str("DECIDE_TREE_MAX"));
++    opt.split_boundary = env_str("DECIDE_SPLIT_BOUNDARY") == "1";
++    opt.allow_cache    = files[0] == "@shared";
++
++    std::vector<llama_decision::field_input> fields;
++    for (size_t f = 3; f < files.size(); ++f) {
++        std::vector<std::string> lines;
++        std::stringstream ss(read_file(files[f]));
++        for (std::string line; std::getline(ss, line);) {
++            lines.push_back(line);
++        }
++        const int n = lines.empty() ? 0 : std::stoi(lines[0]);
++        if (n < 1 || (int) lines.size() < n + 2) {
++            throw std::runtime_error("field file needs a count, the allowed values and a suffix");
++        }
++        llama_decision::field_input in;
++        in.candidates.assign(lines.begin() + 1, lines.begin() + 1 + n);
++        for (size_t j = n + 1; j < lines.size(); ++j) {
++            in.suffix += (j > (size_t) n + 1 ? "\n" : "") + lines[j];
++        }
++        fields.push_back(in);
++    }
++
++    const auto r = eng.decide(read_file(files[1]), read_file(files[2]), fields, opt);
++
++    std::ostringstream out;
++    out << "prefill_ms " << r.prefill_ms << " suffix_scoring_ms " << r.scoring_ms << " decision_rounds " << r.rounds << "\n";
++    out << "RESULT_JSON\n";
++    out << "{\"mode\":\"" << opt.mode << "\",\"fused\":0,\"rows\":" << r.rows << ",\"prefix_cache_hit\":" << (r.cache_hit ? 1 : 0)
++        << ",\"shared_tokens\":" << r.shared_tokens << ",\"context_tokens\":" << r.context_tokens
++        << ",\"decision_rounds\":" << r.rounds << ",\"fields\":[";
++    for (size_t f = 0; f < r.fields.size(); ++f) {
++        const auto & fd = r.fields[f];
++        out << (f ? "," : "") << "{\"field_index\":" << f << ",\"candidate_index\":" << fd.winner
++            << ",\"path_score\":" << fd.path_score << ",\"scored_nodes\":" << fd.scored_nodes
++            << ",\"tree\":" << (fd.tree ? 1 : 0) << ",\"probs\":[";
++        for (size_t i = 0; i < fd.probs.size(); ++i) {
++            out << (i ? "," : "") << fd.probs[i];
++        }
++        out << "]}";
++    }
++    out << "]}\n";
++    std::fputs(out.str().c_str(), stdout);
++    std::fflush(stdout);
++}
++
++static void quiet_log(ggml_log_level level, const char * text, void * /*user*/) {
++    if (level == GGML_LOG_LEVEL_ERROR) {
++        std::fputs(text, stderr);
++    }
++}
++
++int main(int argc, char ** argv) {
++    if (argc < 5) {
++        std::fprintf(stderr, "usage: %s MODEL N_CPU_MOE --worker N_CTX N_BATCH [STREAM_MIN [GEMM_MIN [THREADS]]]\n"
++                             "       %s MODEL N_CPU_MOE @shared|@fresh STATIC CONTEXT FIELD...\n", argv[0], argv[0]);
++        return 1;
++    }
++    const bool worker = std::string(argv[3]) == "--worker";
++
++    common_params params;
++    params.model.path   = argv[1];
++    params.n_gpu_layers = 999;
++    params.fit_params   = false;
++    // this fork has no per-layer helper: any N_CPU_MOE > 0 keeps all experts on the CPU
++    if (std::stoi(argv[2]) > 0) {
++        params.tensor_buft_overrides.push_back(llm_ffn_exps_cpu_override());
++    }
++    if (!params.tensor_buft_overrides.empty()) {
++        params.tensor_buft_overrides.push_back({ nullptr, nullptr });
++    }
++    params.n_ctx      = worker ? std::stoi(argv[4]) : 4096;
++    params.n_batch    = worker ? std::stoi(argv[5]) : 1024;
++    params.n_ubatch   = params.n_batch;
++    params.kv_unified = true; // branches share the trunk's cells instead of copying them
++    params.n_parallel = env_str("DECIDE_NSEQ").empty() ? 24 : std::stoi(env_str("DECIDE_NSEQ"));
++    const int threads = (worker && argc >= 9) ? std::stoi(argv[8]) : 6;
++    params.cpuparams.n_threads       = threads;
++    params.cpuparams_batch.n_threads = threads;
++
++    llama_backend_init();
++    common_init_result_ptr init = common_init_from_params(params);
++    if (!init || !init->model() || !init->context()) {
++        std::fprintf(stderr, "failed to load model or create context\n");
++        return 1;
++    }
++    llama_log_set(quiet_log, nullptr); // keep stdout parseable once loaded
++
++    try {
++        llama_decision::engine eng(init->context(), 0, (int) llama_n_seq_max(init->context()));
++        if (!worker) {
++            decide_files(eng, std::vector<std::string>(argv + 3, argv + argc));
++            return 0;
++        }
++        std::printf("WORKER_READY\n");
++        std::fflush(stdout);
++        for (std::string line; std::getline(std::cin, line);) {
++            if (line.empty() || line == "QUIT") {
++                break;
++            }
++            std::vector<std::string> files;
++            std::stringstream ss(line);
++            for (std::string part; std::getline(ss, part, '\t');) {
++                files.push_back(part);
++            }
++            decide_files(eng, files);
++            std::printf("WORKER_DONE\n");
++            std::fflush(stdout);
++        }
++    } catch (const std::exception & e) {
++        // Fatal request errors exit the worker; the supervisor restarts it with clean state.
++        std::printf("ERROR %s\n", e.what());
++        std::fflush(stdout);
++        return 1;
++    }
++    return 0;
++}
+diff --git a/tools/server/CMakeLists.txt b/tools/server/CMakeLists.txt
+index 280bd9e19..e16dde8ce 100644
+--- a/tools/server/CMakeLists.txt
++++ b/tools/server/CMakeLists.txt
+@@ -31,7 +31,7 @@ endif()
+ 
+ target_include_directories(${TARGET} PRIVATE ../mtmd)
+ target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
+-target_link_libraries(${TARGET} PUBLIC llama-common mtmd ${CMAKE_THREAD_LIBS_INIT})
++target_link_libraries(${TARGET} PUBLIC llama-common mtmd llama-decision ${CMAKE_THREAD_LIBS_INIT})
+ 
+ # llama-server-impl: server logic, reusable by app
+ 
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 68201ff83..bcf1816c7 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -16,6 +16,7 @@
+ #include "speculative.h"
+ #include "mtmd.h"
+ #include "mtmd-helper.h"
++#include "decision-engine.h"
+ 
+ #include "../../src/llama-ext.h" // staging API: llama_get_ctx_other (used by mmproj draft mirroring)
+ 
+@@ -52,7 +53,8 @@ static uint32_t server_n_outputs_max(const common_params & params) {
+ 
+     const uint32_t n_outputs_per_seq = 1 + common_speculative_n_max(&params.speculative);
+ 
+-    const uint64_t n_outputs = (uint64_t) params.n_parallel * n_outputs_per_seq;
++    // /decision scores one output row per branch sequence, all in the same ubatch
++    const uint64_t n_outputs = (uint64_t) params.n_parallel * n_outputs_per_seq + params.n_seq_decision;
+ 
+     return std::max<uint32_t>(1, std::min<uint64_t>(n_batch, n_outputs));
+ }
+@@ -908,6 +910,7 @@ public:
+ 
+     // note: chat_params must not be refreshed upon existing sleeping state
+     server_chat_params chat_params;
++    std::unique_ptr<llama_decision::engine> decision_engine; // created by the first /decision request
+ 
+     server_state_callback_t callback_state = [](server_state, json) -> void {};
+ 
+@@ -2469,6 +2472,81 @@ private:
+                 cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+     }
+ 
++    // POST /decision: answer a finite JSON schema in one batched pass on this thread.
++    // Uses the sequence ids above the slots reserved by --decision-seqs (see tools/parallel-decision).
++    json handle_decision(const json & body) {
++        if (params_base.n_seq_decision < 3) {
++            throw std::invalid_argument("decisions are disabled: start the server with --decision-seqs N (N >= 3)");
++        }
++        // one decision per context; all contexts share the schema, the instructions and the cached prefix
++        if (!body.contains("contexts") || !body.at("contexts").is_array() || body.at("contexts").empty() || body.at("contexts").size() > 256) {
++            throw std::invalid_argument("\"contexts\" must be an array of 1-256 strings");
++        }
++        std::vector<std::string> contexts;
++        for (const auto & c : body.at("contexts")) {
++            if (!c.is_string() || c.get<std::string>().empty()) {
++                throw std::invalid_argument("every entry of \"contexts\" must be a non-empty string");
++            }
++            contexts.push_back(c.get<std::string>());
++        }
++        if (!body.contains("schema")) {
++            throw std::invalid_argument("\"schema\" must be provided");
++        }
++        if (!decision_engine) {
++            decision_engine = std::make_unique<llama_decision::engine>(ctx_tgt, (llama_seq_id) params_base.n_parallel,
++                                                                        params_base.n_seq_decision);
++        }
++        const auto cs = llama_decision::compile_schema(body.at("schema"), body.value("instructions", std::string()));
++        std::string shared;
++        std::vector<std::string> dynamic;
++        for (const auto & c : contexts) {
++            auto [head, tail] = llama_decision::render_prompt(chat_params.tmpls.get(), chat_params.use_jinja, cs.system_text, c);
++            if (dynamic.empty()) {
++                shared = head;
++            } else if (head != shared) {
++                throw std::runtime_error("the chat template renders a different prefix per context");
++            }
++            dynamic.push_back(tail);
++        }
++        llama_decision::options opt;
++        opt.mode        = body.value("mode", std::string("auto"));
++        opt.tree_max    = (size_t) body.value("tree_max", 128);
++        opt.allow_cache = body.value("cache_prompt", true);
++
++        const auto b = decision_engine->decide_batch(shared, dynamic, cs.inputs, opt);
++
++        size_t context_tokens = 0;
++        for (const auto & r : b.items) {
++            context_tokens += r.context_tokens;
++        }
++        json usage = json::object();
++        usage["prompt_tokens"]  = (long long) (b.shared_tokens + context_tokens);
++        usage["cached_tokens"]  = (long long) (b.cache_hit ? b.shared_tokens : 0);
++        usage["context_tokens"] = (long long) context_tokens;
++        usage["scored_rows"]    = b.rows;
++        json timings = json::object();
++        timings["prefill_ms"] = b.prefill_ms;
++        timings["scoring_ms"] = b.scoring_ms;
++        timings["total_ms"]   = b.prefill_ms + b.scoring_ms;
++        timings["rounds"]     = b.rounds;
++        timings["per_decision_ms"] = (b.prefill_ms + b.scoring_ms) / (double) b.items.size();
++
++        json results = json::array();
++        for (const auto & r : b.items) {
++            json item = llama_decision::assemble(cs, r);
++            item["usage"] = { { "context_tokens", (long long) r.context_tokens }, { "scored_rows", r.rows } };
++            results.push_back(item);
++        }
++        json out = json::object();
++        out["object"]  = "decision";
++        out["results"] = results;
++        out["model"]   = model_name;
++        out["created"] = (long long) std::time(nullptr);
++        out["usage"]   = usage;
++        out["timings"] = timings;
++        return out;
++    }
++
+     void process_single_task(server_task && task) {
+         switch (task.type) {
+             case SERVER_TASK_TYPE_COMPLETION:
+@@ -2597,6 +2675,21 @@ private:
+ 
+                     queue_results.send(std::move(res));
+                 } break;
++            case SERVER_TASK_TYPE_DECISION:
++                {
++                    try {
++                        auto res  = std::make_unique<server_task_result_decision>();
++                        res->id   = task.id;
++                        res->data = handle_decision(task.decision_request);
++                        queue_results.send(std::move(res));
++                    } catch (const std::invalid_argument & e) {
++                        send_error(task, e.what(), ERROR_TYPE_INVALID_REQUEST);
++                    } catch (const json::exception & e) {
++                        send_error(task, std::string("invalid decision request: ") + e.what(), ERROR_TYPE_INVALID_REQUEST);
++                    } catch (const std::exception & e) {
++                        send_error(task, e.what(), ERROR_TYPE_SERVER);
++                    }
++                } break;
+             case SERVER_TASK_TYPE_NEXT_RESPONSE:
+                 {
+                     // do nothing
+@@ -5081,6 +5174,28 @@ void server_routes::init_routes() {
+         return handle_embeddings_impl(req, TASK_RESPONSE_TYPE_OAI_EMBD);
+     };
+ 
++    this->post_decision = [this](const server_http_req & req) {
++        auto res = create_response();
++        const json body = json::parse(req.body);
++
++        auto & rd = res->rd;
++        server_task task(SERVER_TASK_TYPE_DECISION);
++        task.id               = rd.get_new_id();
++        task.decision_request = body;
++        rd.post_task(std::move(task));
++
++        auto result = rd.next(req.should_stop);
++        if (!result) {
++            return res; // the client went away
++        }
++        if (result->is_error()) {
++            res->error(result->to_json());
++            return res;
++        }
++        res->ok(result->to_json());
++        return res;
++    };
++
+     this->post_rerank = [this](const server_http_req & req) {
+         auto res = create_response();
+         if (!params.embedding || params.pooling_type != LLAMA_POOLING_TYPE_RANK) {
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index f9ab1132b..d097c630a 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -151,6 +151,7 @@ struct server_routes {
+     server_http_context::handler_t post_embeddings;
+     server_http_context::handler_t post_embeddings_oai;
+     server_http_context::handler_t post_rerank;
++    server_http_context::handler_t post_decision;
+     server_http_context::handler_t get_lora_adapters;
+     server_http_context::handler_t post_lora_adapters;
+ 
+diff --git a/tools/server/server-task.h b/tools/server/server-task.h
+index d939fa378..c6884f120 100644
+--- a/tools/server/server-task.h
++++ b/tools/server/server-task.h
+@@ -27,6 +27,7 @@ enum server_task_type {
+     SERVER_TASK_TYPE_SLOT_ERASE,
+     SERVER_TASK_TYPE_GET_LORA,
+     SERVER_TASK_TYPE_SET_LORA,
++    SERVER_TASK_TYPE_DECISION,
+ };
+ 
+ // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
+@@ -173,6 +174,9 @@ struct server_task {
+     // used by SERVER_TASK_TYPE_METRICS
+     bool metrics_reset_bucket = false;
+ 
++    // used by SERVER_TASK_TYPE_DECISION: the request body
++    json decision_request;
++
+     // used by SERVER_TASK_TYPE_SET_LORA
+     std::map<int, float> set_lora; // mapping adapter ID -> scale
+ 
+@@ -511,6 +515,14 @@ struct server_task_result_error : server_task_result {
+     virtual json to_json() override;
+ };
+ 
++struct server_task_result_decision : server_task_result {
++    json data;
++
++    virtual json to_json() override {
++        return data;
++    }
++};
++
+ struct server_task_result_metrics : server_task_result {
+     int n_idle_slots;
+     int n_processing_slots;
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 4d119306e..184704223 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -174,6 +174,13 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         }
+     }
+ 
++    // decision branches fork from the prompt with llama_memory_seq_cp; a unified KV cache lets
++    // them share the prompt's cells instead of copying them between per-sequence streams
++    if (params.n_seq_decision > 0 && !params.kv_unified) {
++        SRV_INF("--decision-seqs %d: enabling the unified KV cache\n", params.n_seq_decision);
++        params.kv_unified = true;
++    }
++
+     // for consistency between server router mode and single-model mode, we set the same model name as alias
+     auto model_name = params.model.get_name();
+     if (params.model_alias.empty() && !model_name.empty()) {
+@@ -227,6 +234,7 @@ int llama_server(common_params & params, int argc, char ** argv) {
+         routes.post_embeddings             = models_routes->proxy_post;
+         routes.post_embeddings_oai         = models_routes->proxy_post;
+         routes.post_rerank                 = models_routes->proxy_post;
++        routes.post_decision               = models_routes->proxy_post;
+         routes.post_tokenize               = models_routes->proxy_post;
+         routes.post_detokenize             = models_routes->proxy_post;
+         routes.post_apply_template         = models_routes->proxy_post;
+@@ -274,6 +282,8 @@ int llama_server(common_params & params, int argc, char ** argv) {
+     ctx_http.post("/reranking",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/rerank",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/reranking",             ex_wrapper(routes.post_rerank));
++    ctx_http.post("/decision",                 ex_wrapper(routes.post_decision));
++    ctx_http.post("/v1/decision",              ex_wrapper(routes.post_decision));
+     ctx_http.post("/tokenize",                 ex_wrapper(routes.post_tokenize));
+     ctx_http.post("/detokenize",               ex_wrapper(routes.post_detokenize));
+     ctx_http.post("/apply-template",           ex_wrapper(routes.post_apply_template));

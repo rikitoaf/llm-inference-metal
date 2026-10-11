@@ -1,0 +1,1 @@
+Implement compare and satisfies in semver.py exactly as the module docstring specifies. Run the tests with: python3 -m unittest -q. The existing tests do not cover everything in the docstring, so check the other requirements too. Use only the Python standard library. Do not modify the test files.

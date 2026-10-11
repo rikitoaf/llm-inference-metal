@@ -1,0 +1,102 @@
+# dsh patch layer for the local Qwen3.8 + JEV stack. Applied with `--patch` after the profile's own
+# layers, so it works on both the headless and the web profile. Grammar: a YAML array of loader
+# patch entries; `- id: X` replaces row X's keys (a `config` replaces the whole row config),
+# `- insert: [...]` adds rows. Inspect the composed result with scripts/dsh-dump-config.sh.
+
+# 1. Local llama-server through the pi-ai adapter (OpenAI chat completions).
+- id: llm-pi-ai
+  config:
+    providers:
+      llama-local:
+        displayName: llama.cpp Qwen3.8-27B (local)
+        api: openai-completions
+        baseURL: http://127.0.0.1:8080/v1
+        apiKeyEnv: LLAMA_API_KEY            # placeholder; llama-server ignores it, pi-ai requires one
+        reasoning: high                      # default effort when a session picks none
+        timeoutMs: 900000                    # a cold 20K-token prefill takes ~100 s on this machine
+        streamIdleTimeoutMs: 900000
+        retryPolicy:
+          mode: normal
+          maxRetries: 1
+        compat:
+          supportsDeveloperRole: false       # keep role "system": the Qwen template rejects "developer"
+          supportsStore: false
+          maxTokensField: max_tokens
+          thinkingFormat: qwen-chat-template # chat_template_kwargs.enable_thinking + preserve_thinking
+        models:
+          - id: qwen3.8-27b-local            # must match GET /v1/models (llama-server --alias)
+            name: Qwen3.8 27B GSQ-RCO IQ2_S (local)
+            contextWindow: 262144            # keep equal to CTX in config/stack.env
+            maxTokens: 16384
+            reasoningEfforts:
+              off:
+              high: high
+
+# 2. Default model for new agents.
+- id: agent-default-model
+  config:
+    provider: llama-local
+    model: qwen3.8-27b-local
+
+# 3. Lean tool surface: bash + read/edit/write/read_image + glob/grep. Every tool schema is prompt
+#    tokens the local model must prefill (Claude Code's 24 tools cost ~16.5K tokens).
+- id: tool-bash
+  config:
+    enableRunInBackground: false
+- id: tool-jobs
+  disabled: true
+- id: tool-web
+  disabled: true
+- id: tool-subagent
+  disabled: true
+- id: tool-subagent-fork
+  disabled: true
+- id: tool-subagent-control
+  disabled: true
+- id: tool-subagent-list-agents
+  disabled: true
+- id: tool-workflow
+  disabled: true
+- id: tool-ralph
+  disabled: true
+- id: tool-goal
+  disabled: true
+- id: command-goal
+  disabled: true
+- id: tool-skill
+  disabled: true
+- id: tool-todo
+  disabled: true
+- id: plan-mode
+  disabled: true
+- id: session-title-llm                 # saves one extra model call per session
+  disabled: true
+
+# 3b. Cap tool output that enters the context. Every inline byte is prefill on the next step: the
+#     shipped 50,000-byte cap is ~12K tokens, about a minute at this stack's prefill rate. Larger
+#     results become a head/tail preview plus a spill file the agent can grep or read. Append-only,
+#     so the prompt cache survives (unlike tool-result-pruner, which rewrites old results).
+- id: spill-policy
+  config:
+    maxInlineBytes: 16000
+
+# 4. JEV gates (plugins/dsh-plugin-jev). The plugin path must be absolute.
+- insert:
+    - id: jev
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-jev/index.mjs
+      config:
+        url: http://127.0.0.1:8080/v1/decision
+        logFile: /Users/abdul.rakib/agentMania/dsh-qwen-jev/logs/jev-decisions.jsonl
+        verbose: true
+        safety:
+          enabled: true
+          askAt: 0.85                        # p(destructive) -> ask (headless: ask = deny)
+          denyAt: 0.97                       # p(destructive) -> deny
+          scopeAskAt: 0.5                    # system/outside_project scope escalates from this p up
+        triage:
+          enabled: true
+          minConfidence: 0.8
+        doneCheck:
+          enabled: true
+          continueAt: 0.8
+          maxContinues: 2

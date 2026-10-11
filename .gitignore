@@ -1,0 +1,30 @@
+# runtime state - never commit
+logs/
+workspace/
+dsh-home/sessions/
+dsh-home/storages/
+dsh-home/.credentials.yaml
+dsh-home/profiles/node_modules/
+dsh-home/profiles/*/node_modules/
+harness/node_modules/
+plugins/node_modules
+llama/atomic-llama-cpp-turboquant/build/
+__pycache__/
+
+# nested clones: their changes are carried by patches/
+llama/
+splash/splash-src/
+# built test binaries and generated files
+splash/tools/attn_perf
+splash/tools/int4_probe
+splash/tools/rtc_probe
+splash/tools/turbo_attn_harness
+splash/tools/turbo_harness
+dsh-home/*.generated.cordis.patch.yml
+dsh-home/attachments/
+# agent session transcripts from the eval runs (results.jsonl is kept)
+eval/results/*/*.stdout
+eval/results/*/*.stderr
+eval/results/*.log
+.DS_Store
+*.pyc

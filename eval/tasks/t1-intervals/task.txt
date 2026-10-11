@@ -1,0 +1,1 @@
+Fix intervals.py so that merge_intervals and insert_interval behave exactly as their docstrings describe. Run the tests with: python3 -m unittest -q. The existing tests do not cover everything in the docstrings, so check the other requirements too. Do not modify the test files.

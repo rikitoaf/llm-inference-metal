@@ -1,0 +1,17 @@
+{
+  "name": "dsh-profile-qwen-web",
+  "private": true,
+  "dependencies": {
+    "@tt-a1i/archify-dsh": "1.0.0"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@tt-a1i/archify-dsh"
+      ],
+      "patchReload": "live"
+    }
+  }
+}

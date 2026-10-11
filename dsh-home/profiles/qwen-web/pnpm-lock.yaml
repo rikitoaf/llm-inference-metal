@@ -1,0 +1,23 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: false
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@tt-a1i/archify-dsh':
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+
+  '@tt-a1i/archify-dsh@1.0.0':
+    resolution: {integrity: sha512-ae5L+SyZngy3EzYnWHHfccAYJCZh5e9MTkEBh7mrwTMfpwpFtkIhiOg2vI5xnluCS8CSb+Ne1hi1kOWRQQtGBQ==}
+    engines: {node: ^22.19.0 || >=24.0.0}
+
+snapshots:
+
+  '@tt-a1i/archify-dsh@1.0.0': {}

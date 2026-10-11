@@ -1,0 +1,3 @@
+# Turns the JEV plugin off, for A/B runs (eval/run_eval.py): DSH_EXTRA_PATCH=config/dsh/nojev.cordis.patch.yml
+- id: jev
+  disabled: true

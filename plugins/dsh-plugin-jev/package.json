@@ -1,0 +1,10 @@
+{
+  "name": "dsh-plugin-jev",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "JEV gates (safety, triage, done check) for DeepSeek Harness via llama-server /v1/decision",
+  "main": "index.mjs",
+  "keywords": ["dsh-plugin"],
+  "license": "MIT"
+}

@@ -1,0 +1,1 @@
+Fix the inventory package (inventory/store.py and inventory/report.py) so that every function behaves exactly as its docstring describes. Run the tests with: python3 -m unittest -q. The existing tests do not cover everything in the docstrings, so check the other requirements too. Do not modify the test files.

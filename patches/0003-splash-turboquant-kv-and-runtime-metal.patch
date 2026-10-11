@@ -1,0 +1,2264 @@
+diff --git a/Makefile b/Makefile
+index fe0bfd3..e2de3b9 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,6 +2,11 @@ XCRUN := xcrun
+ CXX := $(XCRUN) -sdk macosx clang++
+ METAL := $(XCRUN) -sdk macosx metal
+ METALLIB := $(XCRUN) -sdk macosx metallib
++# Without Xcode's offline Metal compiler (Command Line Tools only), build the
++# kernel "library" as a directory of flattened sources (dev/tools/flatten_metal.py)
++# that MetalBackend compiles with the system's runtime Metal compiler at startup.
++# RUNTIME_METAL=0 forces the offline metallib, 1 the runtime sources.
++RUNTIME_METAL ?= $(if $(shell $(XCRUN) -sdk macosx -f metal 2>/dev/null),0,1)
+ AR := $(XCRUN) -sdk macosx ar
+ SYSTEM_NAME := $(shell uname -s)
+ SYSTEM_ARCH := $(shell uname -m)
+@@ -92,7 +97,7 @@ platform-check:
+ 		echo "error: Xcode with Metal tools is required" >&2; \
+ 		exit 1; \
+ 	}
+-	@for tool in clang++ metal metallib; do \
++	@for tool in clang++ $(if $(filter 1,$(RUNTIME_METAL)),,metal metallib); do \
+ 		"$(XCRUN)" -sdk macosx -f "$$tool" >/dev/null 2>&1 || { \
+ 			echo "error: Xcode with Metal tools is required (missing $$tool)" >&2; \
+ 			exit 1; \
+@@ -181,8 +186,15 @@ $(METAL_BUILD)/%.air: runtime/metal/kernels/%.metal $(KERNEL_HEADERS) \
+ 	@mkdir -p $(dir $@)
+ 	$(RUN_CONFIGURED) $(METAL) $(PROD_METALFLAGS) -c $< -o $@
+ 
++ifeq ($(RUNTIME_METAL),1)
++$(LIB): $(PRODUCTION_KERNEL_SOURCES) $(KERNEL_HEADERS) dev/tools/flatten_metal.py | $(BUILD)
++	rm -rf $@
++	$(RUN_CONFIGURED) $(BUILD_ID_PYTHON) dev/tools/flatten_metal.py runtime --all $@
++else
+ $(LIB): $(PRODUCTION_AIRS)
++	rm -rf $@                             # may be a RUNTIME_METAL=1 source directory
+ 	$(RUN_CONFIGURED) $(METALLIB) $(BUILD_INPUTS) -o $@
++endif
+ 
+ ENGINE_BUILD := $(BUILD)/engine
+ ENGINE_LIBRARY := $(ENGINE_BUILD)/libsplash.a
+@@ -199,7 +211,7 @@ CONFIG_DIGEST := $(shell printf '%s\0' $(BUILD_RULES_DIGEST) \
+ 	$(call shell-quote,$(ENGINE_OBJCXXFLAGS)) $(call shell-quote,$(ENGINE_DEPFLAGS)) \
+ 	$(call shell-quote,$(ENGINE_LINKFLAGS)) $(call shell-quote,$(AR)) \
+ 	$(call shell-quote,$(METAL)) $(call shell-quote,$(PROD_METALFLAGS)) \
+-	$(call shell-quote,$(METALLIB)) | shasum -a 256 | cut -c1-16)
++	$(call shell-quote,$(METALLIB)) RUNTIME_METAL=$(RUNTIME_METAL) | shasum -a 256 | cut -c1-16)
+ RUN_CONFIGURED = $(BUILD_ID_PYTHON) $(BUILD_CONFIG_TOOL) record \
+ 	--output $(call shell-quote,$@) --config $(BUILD_CONFIG) --
+ BUILD_INPUTS = $(filter-out force-build-config,$^)
+diff --git a/dev/tools/flatten_metal.py b/dev/tools/flatten_metal.py
+new file mode 100755
+index 0000000..ecdfb88
+--- /dev/null
++++ b/dev/tools/flatten_metal.py
+@@ -0,0 +1,62 @@
++#!/usr/bin/env python3
++"""Flatten a Splash .metal kernel file into one self-contained source for runtime compilation.
++
++The engine's offline build compiles each runtime/metal/kernels/{prefill,decode,shared}/*.metal with
++`-Iruntime`; Metal's runtime compiler (MTLDevice newLibraryWithSource:) has no include path, so
++every `#include "metal/..."` is inlined here, once per file (#pragma once semantics). System
++includes (<metal_stdlib>, <MetalPerformancePrimitives/...>) stay as they are.
++
++    flatten_metal.py RUNTIME_ROOT KERNEL.metal > out.metal
++    flatten_metal.py RUNTIME_ROOT --all OUT_DIR        # every production kernel, one file each
++"""
++import pathlib, re, sys
++
++INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"\s*$')
++PRAGMA_ONCE = re.compile(r'^\s*#\s*pragma\s+once\s*$')
++
++
++def label(root: pathlib.Path, path: pathlib.Path) -> str:
++    try:
++        return str(path.relative_to(root.resolve()))
++    except ValueError:                     # a file outside the runtime tree, e.g. a test kernel
++        return str(path)
++
++
++def flatten(root: pathlib.Path, path: pathlib.Path, seen: set, out: list):
++    path = path.resolve()
++    if path in seen:
++        return
++    seen.add(path)
++    out.append(f"// ---- begin {label(root, path)}\n")
++    for line in path.read_text().splitlines(keepends=True):
++        if PRAGMA_ONCE.match(line):
++            continue
++        m = INCLUDE.match(line)
++        if m:
++            target = (root / m[1]) if m[1].startswith("metal/") else (path.parent / m[1])
++            if not target.exists():
++                raise SystemExit(f"{path}: cannot resolve include {m[1]}")
++            flatten(root, target, seen, out)
++            continue
++        out.append(line)
++    if not out[-1].endswith("\n"):
++        out.append("\n")
++    out.append(f"// ---- end {label(root, path)}\n")
++
++
++def flatten_file(root, kernel):
++    out = []
++    flatten(pathlib.Path(root), pathlib.Path(kernel), set(), out)
++    return "".join(out)
++
++
++if __name__ == "__main__":
++    root = pathlib.Path(sys.argv[1])
++    if len(sys.argv) == 4 and sys.argv[2] == "--all":
++        dest = pathlib.Path(sys.argv[3])
++        dest.mkdir(parents=True, exist_ok=True)
++        for phase in ("prefill", "decode", "shared"):
++            for kernel in sorted((root / "metal" / "kernels" / phase).glob("*.metal")):
++                (dest / f"{phase}__{kernel.stem}.metal").write_text(flatten_file(root, kernel))
++    else:
++        sys.stdout.write(flatten_file(root, sys.argv[2]))
+diff --git a/runtime/engine/RuntimeResources.mm b/runtime/engine/RuntimeResources.mm
+index 65c7586..8136d6a 100644
+--- a/runtime/engine/RuntimeResources.mm
++++ b/runtime/engine/RuntimeResources.mm
+@@ -210,7 +210,10 @@ void requireLoadedModel(const model::ModelPackage &package) {
+   canonical << "splash-persistent-cache-v" << kPersistentCacheFormat << '\n'
+             << identity.modelLayoutSha256 << '\n'
+             << "kv " << kv::kPageTokens << ' ' << kv.attentionLayers << ' ' << kv.kvHeads << ' '
+-            << kv.headDimension << ' ' << kv::formatName(kv.format) << '\n'
++            << kv.headDimension << ' ' << kv::formatName(kv.format);
++  if (const uint32_t revision = kv::quantizerRevision(kv.format); revision > 1)
++    canonical << " r" << revision;
++  canonical << '\n'
+             << "gdn " << gdn.layers << ' ' << gdn.convolutionHistory << ' '
+             << gdn.convolutionChannels << ' ' << gdn.recurrentGroups << ' ' << gdn.recurrentRows
+             << ' ' << gdn.recurrentColumns << '\n'
+diff --git a/runtime/engine/Status.cpp b/runtime/engine/Status.cpp
+index b06ec78..241bf32 100644
+--- a/runtime/engine/Status.cpp
++++ b/runtime/engine/Status.cpp
+@@ -98,10 +98,21 @@ std::string runtimeStatusJson(
+       << json::quote(cacheIdentity.targetModelSha256)
+       << ",\"format\":" << json::quote(kv::formatName(kvFormat))
+       << ",\"quantization\":"
+-      << json::quote(kvFormat == kv::Format::Int8 ? "symmetric_int8" : "none")
+-      << ",\"scale_type\":" << json::quote(kvFormat == kv::Format::Int8 ? "float32" : "none")
++      << json::quote(kvFormat == kv::Format::Int8        ? "symmetric_int8"
++                     : kvFormat == kv::Format::Turbo     ? "turboquant_k4_v3"
++                     : kvFormat == kv::Format::TurboInt4 ? "turboquant_wht256_int4"
++                                                         : "none")
++      << ",\"scale_type\":"
++      << json::quote(kvFormat == kv::Format::Int8 || kvFormat == kv::Format::TurboInt4
++                         ? "float32"
++                     : kvFormat == kv::Format::Turbo ? "float16_norm_per_128"
++                                                     : "none")
+       << ",\"key_layout\":\"token_major\""
+-      << ",\"value_layout\":\"dimension_major\"}},"
++      << ",\"value_layout\":"
++      << json::quote(kvFormat == kv::Format::Turbo || kvFormat == kv::Format::TurboInt4
++                         ? "token_major"
++                         : "dimension_major")
++      << "}},"
+       << "\"memory_plan\":" << plan.toStatusJson()
+       << ",\"memory_actual\":{\"allocated_bytes\":" << metalMemory.allocatedBytes
+       << ",\"current_bytes\":" << currentBytes
+diff --git a/runtime/main.mm b/runtime/main.mm
+index 8ae9b47..d3753f8 100644
+--- a/runtime/main.mm
++++ b/runtime/main.mm
+@@ -180,7 +180,7 @@ void printUsage(std::string_view executable) {
+       "usage: " + std::string(executable) +
+       " serve-native MODEL_DIRECTORY"
+       " MAX_CONTEXT|auto MAX_MEMORY_BYTES|auto [MAX_CACHE_DISK_BYTES]"
+-      " [--kv-format int8|bf16] [--decode-share SHARE]"
++      " [--kv-format int8|bf16|turbo|turbo-int4] [--decode-share SHARE]"
+       " [--max-image-patches PATCHES] [--cache-dir DIRECTORY]"
+       " [--idle-release SECONDS|off] [--idle-sleep prevent|allow]");
+ }
+@@ -275,9 +275,12 @@ NativeArguments parseArguments(int argc, char **argv) {
+     const std::string_view option(argv[next]);
+     const std::string_view value(next + 1 < argc ? argv[next + 1] : "");
+     if (option == "--kv-format") {
+-      if (value != "int8" && value != "bf16")
+-        throw UsageError("--kv-format requires int8 or bf16");
+-      result.kvFormat = value == "int8" ? kv::Format::Int8 : kv::Format::BFloat16;
++      if (value != "int8" && value != "bf16" && value != "turbo" && value != "turbo-int4")
++        throw UsageError("--kv-format requires int8, bf16, turbo or turbo-int4");
++      result.kvFormat = value == "int8"    ? kv::Format::Int8
++                        : value == "bf16"  ? kv::Format::BFloat16
++                        : value == "turbo" ? kv::Format::Turbo
++                                           : kv::Format::TurboInt4;
+     } else if (option == "--decode-share") {
+       result.decodeShare = parseDecodeShare(value);
+     } else if (option == "--max-image-patches") {
+diff --git a/runtime/metal/MetalBackend.mm b/runtime/metal/MetalBackend.mm
+index bd15721..40e4307 100644
+--- a/runtime/metal/MetalBackend.mm
++++ b/runtime/metal/MetalBackend.mm
+@@ -535,6 +535,10 @@ void abandon() noexcept {
+     // Allocations hold it weakly: they may outlive the backend.
+     std::shared_ptr<Residency> residency;
+     __strong id<MTLLibrary> library = nil;
++    // A runtime-compiled build (RUNTIME_METAL=1 in the Makefile) has one
++    // library per flattened kernel source instead, and each function name maps
++    // to the library that defines it.
++    NSMutableDictionary<NSString *, id<MTLLibrary>> *sourceFunctions = nil;
+     // Looked up for every dispatch when its command is prepared, which the
+     // GPU may be waiting for; a hit allocates nothing. Used only by the
+     // submitting thread.
+@@ -598,9 +602,67 @@ void markUnhealthy(std::string reason) {
+         return result;
+     }
+ 
++    // Compiles every flattened kernel source of a runtime-Metal build (one
++    // .metal per production kernel file, dev/tools/flatten_metal.py) with the
++    // system compiler, concurrently, as the offline build would: Metal 4.0
++    // and the compiler's default math mode. The OS caches the results, so
++    // only the first start after a kernel change pays the full compile.
++    void loadRuntimeSources(const std::string &directory, NSString *path) {
++        NSError *error = nil;
++        NSArray<NSString *> *names =
++            [[NSFileManager defaultManager] contentsOfDirectoryAtPath:path
++                                                                error:&error];
++        if (!names)
++            throw MetalBackendError("unable to list kernel sources in " +
++                                    directory + ": " + errorDescription(error));
++        NSMutableArray<NSString *> *files = [NSMutableArray array];
++        for (NSString *name in [names sortedArrayUsingSelector:@selector(compare:)])
++            if ([name.pathExtension isEqualToString:@"metal"])
++                [files addObject:[path stringByAppendingPathComponent:name]];
++        if (files.count == 0)
++            throw MetalBackendError("no kernel sources in " + directory);
++        const NSUInteger count = files.count;
++        NSMutableArray *results = [NSMutableArray arrayWithCapacity:count];
++        for (NSUInteger index = 0; index < count; ++index)
++            [results addObject:[NSNull null]];
++        id<MTLDevice> compiler = device;
++        dispatch_apply(count, dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0),
++                       ^(size_t index) {
++            NSError *fileError = nil;
++            NSString *source = [NSString stringWithContentsOfFile:files[index]
++                                                         encoding:NSUTF8StringEncoding
++                                                            error:&fileError];
++            id result = fileError;
++            if (source) {
++                MTLCompileOptions *options = [MTLCompileOptions new];
++                options.languageVersion = MTLLanguageVersion4_0;
++                id<MTLLibrary> compiled = [compiler newLibraryWithSource:source
++                                                                 options:options
++                                                                   error:&fileError];
++                result = compiled ? (id)compiled : (id)fileError;
++            }
++            @synchronized(results) {
++                results[index] = result ? result : [NSNull null];
++            }
++        });
++        sourceFunctions = [NSMutableDictionary dictionary];
++        for (NSUInteger index = 0; index < count; ++index) {
++            id result = results[index];
++            if (![result conformsToProtocol:@protocol(MTLLibrary)])
++                throw MetalBackendError(
++                    "unable to compile " + std::string(files[index].UTF8String) +
++                    ": " + errorDescription([result isKindOfClass:[NSError class]]
++                                                ? (NSError *)result : nil));
++            id<MTLLibrary> compiled = result;
++            for (NSString *function in compiled.functionNames)
++                sourceFunctions[function] = compiled;
++        }
++    }
++
+     id<MTLComputePipelineState> newPipeline(std::string_view name) {
+         NSString *key = checkedNSString(name, "pipeline name");
+-        id<MTLFunction> function = [library newFunctionWithName:key];
++        id<MTLLibrary> owner = library ? library : sourceFunctions[key];
++        id<MTLFunction> function = owner ? [owner newFunctionWithName:key] : nil;
+         if (!function) {
+             throw MetalBackendError(
+                 "missing Metal function: " + std::string(name));
+@@ -947,6 +1009,12 @@ throw MetalBackendError(
+ 
+         NSString *path = checkedNSString(metallibPath, "metallib path");
+         NSError *error = nil;
++        BOOL isDirectory = NO;
++        if ([[NSFileManager defaultManager] fileExistsAtPath:path
++                                                 isDirectory:&isDirectory] &&
++            isDirectory) {
++            impl_->loadRuntimeSources(metallibPath, path);
++        } else {
+         NSData *fileData = [NSData dataWithContentsOfFile:path
+                                                  options:0
+                                                    error:&error];
+@@ -967,6 +1035,7 @@ throw MetalBackendError(
+                 "unable to load metallib " + metallibPath + ": " +
+                 errorDescription(error));
+         }
++        }
+         // Ending residency dispatches a kernel built here, so no pipeline or
+         // driver program is compiled when a keep-alive lapses.
+         impl_->residency = std::make_shared<Residency>(
+diff --git a/runtime/metal/abi/KvExtent.h b/runtime/metal/abi/KvExtent.h
+index 16218ac..9bb49b4 100644
+--- a/runtime/metal/abi/KvExtent.h
++++ b/runtime/metal/abi/KvExtent.h
+@@ -29,6 +29,35 @@ typedef uint64_t SplashKvPage;
+ #define SPLASH_KV_VALUES 2u
+ #define SPLASH_KV_VALUE_SCALES 3u
+ 
++// The bytes one page holds of each tensor of one layer, in region order. INT8
++// and BF16 give keys and values one size (and their scales another);
++// TurboQuant stores 4-bit keys and 3-bit values, so the four may differ.
++struct SplashKvPageGeometry {
++  uint32_t key_data;
++  uint32_t key_scales;
++  uint32_t value_data;
++  uint32_t value_scales;
++};
++
++inline SplashKvPageGeometry splash_kv_symmetric_geometry(uint32_t data_bytes,
++                                                         uint32_t scale_bytes) {
++  SplashKvPageGeometry geometry = {data_bytes, scale_bytes, data_bytes, scale_bytes};
++  return geometry;
++}
++
++inline uint32_t splash_kv_tensor_bytes(SplashKvPageGeometry geometry,
++                                       uint32_t tensor) {
++  return tensor == SPLASH_KV_KEYS ? geometry.key_data
++       : tensor == SPLASH_KV_KEY_SCALES ? geometry.key_scales
++       : tensor == SPLASH_KV_VALUES ? geometry.value_data
++                                    : geometry.value_scales;
++}
++
++inline uint64_t splash_kv_layer_page_bytes(SplashKvPageGeometry geometry) {
++  return uint64_t(geometry.key_data) + geometry.key_scales + geometry.value_data +
++         geometry.value_scales;
++}
++
+ // The bytes one page holds of one tensor of one layer: data_bytes for keys
+ // and values, scale_bytes for their scales.
+ inline uint32_t splash_kv_page_bytes(uint32_t data_bytes, uint32_t scale_bytes,
+@@ -62,15 +91,27 @@ inline uint64_t splash_kv_scale_element(uint32_t head, uint32_t token) {
+ // Every extent of a pool holds extent_pages pages. Per attention layer a
+ // region holds the keys of every page, then their key scales, values and
+ // value scales.
++inline uint64_t splash_kv_geometry_offset(uint32_t extent_pages,
++                                          SplashKvPageGeometry geometry,
++                                          uint32_t layer, uint32_t tensor,
++                                          uint32_t index) {
++  const uint64_t region =
++      uint64_t(layer) * extent_pages * splash_kv_layer_page_bytes(geometry);
++  uint64_t before = 0;
++  for (uint32_t earlier = SPLASH_KV_KEYS; earlier < tensor; ++earlier)
++    before += splash_kv_tensor_bytes(geometry, earlier);
++  return region + extent_pages * before +
++         uint64_t(index) * splash_kv_tensor_bytes(geometry, tensor);
++}
++
++// The same placement for formats whose keys and values share one data size
++// and one scale size (INT8, BF16).
+ inline uint64_t splash_kv_offset(uint32_t extent_pages, uint32_t data_bytes,
+                                  uint32_t scale_bytes, uint32_t layer,
+                                  uint32_t tensor, uint32_t index) {
+-  const uint64_t region =
+-      uint64_t(layer) * extent_pages * 2 * (uint64_t(data_bytes) + scale_bytes);
+-  const uint64_t before =
+-      (tensor + 1) / 2 * uint64_t(data_bytes) + tensor / 2 * uint64_t(scale_bytes);
+-  return region + extent_pages * before +
+-         uint64_t(index) * splash_kv_page_bytes(data_bytes, scale_bytes, tensor);
++  return splash_kv_geometry_offset(
++      extent_pages, splash_kv_symmetric_geometry(data_bytes, scale_bytes), layer,
++      tensor, index);
+ }
+ 
+ // Where one attention layer sits in every extent of a pool: its region
+@@ -83,10 +124,19 @@ struct SplashKvLayer {
+ static_assert(sizeof(SplashKvLayer) == 8, "KV layer placement is 8 bytes on both sides");
+ 
+ // The placement of `layer` in a pool of extents of extent_pages pages.
++inline SplashKvLayer splash_kv_geometry_layer(uint32_t extent_pages,
++                                              SplashKvPageGeometry geometry,
++                                              uint32_t layer) {
++  SplashKvLayer placement = {
++      extent_pages, uint32_t(splash_kv_geometry_offset(extent_pages, geometry, layer,
++                                                       SPLASH_KV_KEYS, 0))};
++  return placement;
++}
++
+ inline SplashKvLayer splash_kv_layer(uint32_t extent_pages, uint32_t data_bytes,
+                                      uint32_t scale_bytes, uint32_t layer) {
+-  return {extent_pages, uint32_t(splash_kv_offset(extent_pages, data_bytes, scale_bytes,
+-                                                  layer, SPLASH_KV_KEYS, 0))};
++  return splash_kv_geometry_layer(
++      extent_pages, splash_kv_symmetric_geometry(data_bytes, scale_bytes), layer);
+ }
+ 
+ // The entry of the page at `index` of the extent whose GPU address is
+diff --git a/runtime/metal/abi/PagedAttention.h b/runtime/metal/abi/PagedAttention.h
+index 36ace9c..8627fe8 100644
+--- a/runtime/metal/abi/PagedAttention.h
++++ b/runtime/metal/abi/PagedAttention.h
+@@ -59,6 +59,17 @@ struct SplashPrefillAttentionParams {
+ static_assert(sizeof(SplashPrefillAttentionParams) == 28,
+               "Prefill attention parameters are 28 bytes on both sides");
+ 
++// TurboQuant KV stores keys and values rotated by a fixed randomized
++// Walsh-Hadamard transform per 128 dimensions, so the queries are rotated the
++// same way before attention (the reduce rotates the output back). The rotation
++// kernel rotates `vectors` contiguous head vectors of SPLASH_KV_HEAD_DIMENSION
++// in place.
++struct SplashTurboRotateParams {
++  uint32_t vectors;
++};
++static_assert(sizeof(SplashTurboRotateParams) == 4,
++              "Turbo rotation parameters are 4 bytes on both sides");
++
+ // A verify lane attends all its SPLASH_TARGET_VERIFY_ROWS rows, which its
+ // queries and output hold in SPLASH_VERIFY_CHUNK_STRIDE rows per KV head.
+ struct SplashVerifyAttentionParams {
+diff --git a/runtime/metal/kernels/common/paged_attention_tile.h b/runtime/metal/kernels/common/paged_attention_tile.h
+index 17708b9..5c1896a 100644
+--- a/runtime/metal/kernels/common/paged_attention_tile.h
++++ b/runtime/metal/kernels/common/paged_attention_tile.h
+@@ -3,6 +3,7 @@
+ #include "metal/abi/PagedAttention.h"
+ #include "metal/kernels/common/kv_extent.h"
+ #include "metal/kernels/common/kv_paging.h"
++#include "metal/kernels/common/turbo_kv.h"
+ #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
+ #include <metal_stdlib>
+ 
+@@ -293,13 +294,17 @@ inline void splash_paged_attention_tile(
+ // statistics are shared by all 256 output dimensions: their weights are
+ // computed once per row, then each lane streams one dimension of the
+ // partials. A row past the tile's active rows is written as zeros; a
+-// threadgroup owns one fused row, so it returns uniformly.
+-template <uint QueryHeadsPerKVHead, uint RowsPerTile>
++// threadgroup owns one fused row, so it returns uniformly. A nonzero Rotation
++// (TurboQuant KV: 128 for turbo, 256 for turbo int4) rotates the combined row
++// back from the rotated value basis through `rotation`, which holds
++// SplashKvHeadDimension floats.
++template <uint QueryHeadsPerKVHead, uint RowsPerTile, uint Rotation = 0>
+ inline void splash_attention_reduce_row(
+     device const float *partials, device const float *statistics,
+     device bfloat *tile_output, uint committed_tokens, uint active_rows,
+     uint splits, ulong head_slot, uint fused_row, uint thread_index,
+-    threadgroup float *weights, threadgroup float *group_values) {
++    threadgroup float *weights, threadgroup float *group_values,
++    threadgroup float *rotation = nullptr) {
+   constexpr uint M = RowsPerTile * QueryHeadsPerKVHead;
+   constexpr uint D = SplashKvHeadDimension;
+   if (fused_row / QueryHeadsPerKVHead >= active_rows) {
+@@ -329,6 +334,324 @@ inline void splash_attention_reduce_row(
+         partials[((head_slot + split) * M + fused_row) * D + thread_index];
+     denominator += weight * statistics[stat + 1];
+   }
+-  tile_output[fused_row * D + thread_index] =
+-      bfloat(denominator > 0.0f ? numerator / denominator : 0.0f);
++  float result = denominator > 0.0f ? numerator / denominator : 0.0f;
++  if constexpr (Rotation != 0) {
++    static_assert(Rotation == SplashTurboGroup || Rotation == D, "rotation groups of 128 or 256");
++    rotation[thread_index] = result;
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    if constexpr (Rotation == SplashTurboGroup) {
++      if (sg < SplashTurboGroups) {
++        float x[4];
++#pragma unroll
++        for (uint r = 0; r < 4; ++r)
++          x[r] = rotation[sg * SplashTurboGroup + 32 * r + lane];
++        splash_turbo_rotate(x, lane, true);
++#pragma unroll
++        for (uint r = 0; r < 4; ++r)
++          rotation[sg * SplashTurboGroup + 32 * r + lane] = x[r];
++      }
++    } else {
++      if (sg == 0) {
++        float x[8];
++#pragma unroll
++        for (uint r = 0; r < 8; ++r)
++          x[r] = rotation[32 * r + lane];
++        splash_turbo_rotate256(x, lane, true);
++#pragma unroll
++        for (uint r = 0; r < 8; ++r)
++          rotation[32 * r + lane] = x[r];
++      }
++    }
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    result = rotation[thread_index];
++  }
++  tile_output[fused_row * D + thread_index] = bfloat(result);
++}
++
++// ---- TurboQuant pages (turbo_kv.h) ----------------------------------------
++// The tile dequantizes each page's keys, then its values, into one
++// SplashKvPageTokens x SplashKvHeadDimension bf16 tile in threadgroup memory
++// (16 KiB) and runs the same MPP products on it. The stored norms are folded
++// into the dequantized values, so the softmax applies no scales; keys and
++// values stay in the rotated basis, which the rotated queries share and the
++// reduce undoes. Tokens past the visible history dequantize to zero.
++
++// Keys, token-major like the device layout. The page's packed planes (32
++// tokens x 8 chunks x 16 bytes) and norms are first staged in threadgroup
++// memory with one coalesced load per thread: 32 dependent device loads per
++// lane were the tile's largest cost. Then simdgroup c owns dimensions
++// 32c..32c+31, one per lane, and walks the tokens reading broadcast words.
++// `staging` holds 264 uint4 and is free at this point of the page loop.
++inline void splash_turbo_dequantize_keys(SplashTurboPageTensors page,
++                                         threadgroup SplashTurboTileElement *tile,
++                                         threadgroup uint4 *staging, uint valid_tokens,
++                                         uint thread_index, uint simd_lane,
++                                         uint simd_group) {
++  constexpr uint D = SplashKvHeadDimension;
++  constexpr uint Words = SplashKvPageTokens * SplashTurboChunks;          // 256 uint4
++  constexpr uint Norms = SplashKvPageTokens * SplashTurboGroups;          // 64 half
++  static_assert(Words == 256 && Norms * 2 == 8 * 16, "one uint4 per thread, 8 for the norms");
++  threadgroup half *norms = reinterpret_cast<threadgroup half *>(staging + Words);
++  staging[thread_index] =
++      thread_index / SplashTurboChunks < valid_tokens
++          ? reinterpret_cast<device const uint4 *>(page.key_planes)[thread_index]
++          : uint4(0);
++  if (thread_index < 8)
++    reinterpret_cast<threadgroup uint4 *>(norms)[thread_index] =
++        reinterpret_cast<device const uint4 *>(page.key_norms)[thread_index];
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++  const uint chunk = simd_group;
++  const uint dimension = chunk * 32 + simd_lane;
++  const uint group = chunk / (SplashTurboGroup / 32);
++  // The codebook lives in registers, centroid i in lane i: a lookup is one
++  // shuffle instead of a constant-memory read whose index differs per lane.
++  const float codebook = SplashTurboCentroids4[simd_lane & 15u];
++  for (uint token = 0; token < SplashKvPageTokens; ++token) {
++    float value = 0.0f;
++    if (token < valid_tokens) {
++      const uint4 word = staging[token * SplashTurboChunks + chunk];
++      const uint index = ((word.x >> simd_lane) & 1u) | (((word.y >> simd_lane) & 1u) << 1) |
++                         (((word.z >> simd_lane) & 1u) << 2) |
++                         (((word.w >> simd_lane) & 1u) << 3);
++      value = simd_shuffle(codebook, ushort(index)) *
++              float(norms[token * SplashTurboGroups + group]);
++    }
++    tile[token * D + dimension] = SplashTurboTileElement(value);
++  }
++}
++
++// Values, dimension-major as PV reads them: simdgroup c owns the chunk's 32
++// dimensions and lane t the page's token t, whose three planes and norm it
++// loads once.
++inline void splash_turbo_dequantize_values(SplashTurboPageTensors page,
++                                           threadgroup SplashTurboTileElement *tile,
++                                           uint valid_tokens, uint simd_lane,
++                                           uint simd_group) {
++  constexpr uint N = SplashKvPageTokens;
++  const uint chunk = simd_group;
++  const uint token = simd_lane;
++  const uint group = chunk / (SplashTurboGroup / 32);
++  uint plane0 = 0, plane1 = 0, plane2 = 0;
++  float norm = 0.0f;
++  if (token < valid_tokens) {
++    device const uint *planes =
++        page.value_planes + (token * SplashTurboChunks + chunk) * SplashTurboValuePlanes;
++    plane0 = planes[0];
++    plane1 = planes[1];
++    plane2 = planes[2];
++    norm = float(page.value_norms[token * SplashTurboGroups + group]);
++  }
++  const float codebook = SplashTurboCentroids3[simd_lane & 7u];   // as for the keys
++#pragma unroll 8
++  for (uint bit = 0; bit < 32; ++bit) {
++    const uint index = ((plane0 >> bit) & 1u) | (((plane1 >> bit) & 1u) << 1) |
++                       (((plane2 >> bit) & 1u) << 2);
++    tile[(chunk * 32 + bit) * N + token] = SplashTurboTileElement(simd_shuffle(codebook, ushort(index)) * norm);
++  }
++}
++
++// splash_paged_attention_tile for TurboQuant pages; the same partition,
++// softmax and partial outputs. kv_tile holds N x D bf16.
++template <uint KVHeads, uint QueryHeadsPerKVHead, uint RowsPerTile>
++inline void splash_paged_attention_turbo_tile(
++    device bfloat *tile_queries, device const SplashKvPage *page_table,
++    SplashKvLayer kv, uint kv_head, uint committed_tokens, uint active_rows, uint splits,
++    uint split, device float *partials, device float *statistics, ulong slot,
++    threadgroup float *scores, threadgroup bfloat *probabilities,
++    threadgroup float *row_max, threadgroup float *row_sum,
++    threadgroup float *previous_scale, threadgroup atomic_uint *rescale,
++    threadgroup SplashTurboTileElement *kv_tile, uint thread_index, uint simd_lane,
++    uint simd_group) {
++  constexpr ushort M = RowsPerTile * QueryHeadsPerKVHead;
++  constexpr ushort N = SplashKvPageTokens;
++  constexpr ushort D = SplashKvHeadDimension;
++  static_assert(D / 32 == 8, "eight simdgroups dequantize one chunk each");
++  static_assert(uint(M) * N * sizeof(float) >= (256 + 8) * 16,
++                "the score tile stages a page's packed keys");
++  uint visible_tokens = committed_tokens + active_rows;
++  uint pages = splash_attention_pages(visible_tokens);
++  uint per_split = splash_attention_pages_per_split(pages, splits);
++  uint page_begin = split * per_split;
++  if (page_begin >= pages)
++    return;
++  uint page_end = min(pages, page_begin + per_split);
++  if (thread_index < M) {
++    row_max[thread_index] = -INFINITY;
++    row_sum[thread_index] = 0.0f;
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  auto qt = tensor(tile_queries, dextents<int, 2>{D, M}, array<int, 2>{1, D});
++  auto st = tensor(scores, dextents<int, 2>{N, M}, array<int, 2>{1, N});
++  auto pt = tensor(probabilities, dextents<int, 2>{N, M}, array<int, 2>{1, N});
++  auto kt = tensor(kv_tile, dextents<int, 2>{D, N}, array<int, 2>{1, D});
++  auto vt = tensor(kv_tile, dextents<int, 2>{N, D}, array<int, 2>{1, N});
++  auto p0 = pt.slice<N, M>(0, 0);
++  auto q0 = qt.slice<D, M>(0, 0);
++  auto k0 = kt.template slice<D, N>(0, 0);
++  auto v0 = vt.template slice<N, D>(0, 0);
++  const SplashTurboAddressing<KVHeads> addressing(kv, kv_head);
++  constexpr auto qk_descriptor =
++      matmul2d_descriptor(M, N, D, false, true, false,
++                          matmul2d_descriptor::mode::multiply);
++  constexpr auto pv_descriptor =
++      matmul2d_descriptor(M, D, N, false, true, true,
++                          matmul2d_descriptor::mode::multiply_accumulate);
++  matmul2d<qk_descriptor, execution_simdgroups<8>> qk;
++  matmul2d<pv_descriptor, execution_simdgroups<8>> pv;
++  auto running = pv.template get_destination_cooperative_tensor<
++      decltype(p0), decltype(v0), float>();
++  const bool running_full =
++      uint(running.get_capacity()) * (8u * 32u) == uint(M) * D;
++#pragma unroll
++  for (ushort index = 0; index < running.get_capacity(); ++index) {
++    if (running_full || running.is_valid_element(index))
++      running[index] = 0.0f;
++  }
++
++  for (uint page = page_begin; page < page_end; ++page) {
++    const SplashTurboPageTensors tensors = addressing.page(page_table[page]);
++    uint token_start = page * N;
++    const uint valid_tokens = min(uint(N), visible_tokens - token_start);
++    // The previous page's softmax consumed the scores: they stage the keys.
++    splash_turbo_dequantize_keys(tensors, kv_tile,
++                                 reinterpret_cast<threadgroup uint4 *>(scores), valid_tokens,
++                                 thread_index, simd_lane, simd_group);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    auto page_scores = qk.template get_destination_cooperative_tensor<
++        decltype(q0), decltype(k0), float>();
++    qk.run(q0, k0, page_scores);
++    page_scores.store(st.slice<N, M>(0, 0));
++    if (thread_index == 0)
++      atomic_store_explicit(rescale, 0u, memory_order_relaxed);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    splash_attention_page_softmax<QueryHeadsPerKVHead, RowsPerTile, false>(
++        scores, probabilities, row_max, row_sum, previous_scale, rescale,
++        nullptr, nullptr, token_start, visible_tokens, committed_tokens,
++        active_rows, thread_index);
++    // QK finished reading the keys before the barrier above; the values
++    // take the tile over while the softmax runs.
++    splash_turbo_dequantize_values(tensors, kv_tile, valid_tokens, simd_lane, simd_group);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    if (atomic_load_explicit(rescale, memory_order_relaxed)) {
++#pragma unroll
++      for (ushort index = 0; index < running.get_capacity(); ++index) {
++        if (!running_full && !running.is_valid_element(index))
++          continue;
++        auto coordinates = running.get_multidimensional_index(index);
++        running[index] *= previous_scale[coordinates[1]];
++      }
++    }
++    pv.run(p0, v0, running);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++  }
++  auto target = tensor(partials + slot * M * D, dextents<int, 2>{D, M},
++                       array<int, 2>{1, D});
++  running.store(target.slice<D, M>(0, 0));
++  if (thread_index < M) {
++    statistics[(slot * M + thread_index) * 2] = row_max[thread_index];
++    statistics[(slot * M + thread_index) * 2 + 1] = row_sum[thread_index];
++  }
++}
++
++// ---- TurboQuant int4 pages (turbo_kv.h) -----------------------------------
++// The INT8 tile with 4-bit operands: MPP multiplies the rotated queries by the
++// int4 keys and the probabilities by the int4 values straight from the pages,
++// both token-major, and the softmax applies the per-token fp32 scales as for
++// INT8. No dequantization loop; the reduce rotates the output back.
++template <uint KVHeads, uint QueryHeadsPerKVHead, uint RowsPerTile>
++inline void splash_paged_attention_turbo_int4_tile(
++    device bfloat *tile_queries, device const SplashKvPage *page_table,
++    SplashKvLayer kv, uint kv_head, uint committed_tokens, uint active_rows, uint splits,
++    uint split, device float *partials, device float *statistics, ulong slot,
++    threadgroup float *scores, threadgroup bfloat *probabilities,
++    threadgroup float *row_max, threadgroup float *row_sum,
++    threadgroup float *previous_scale, threadgroup atomic_uint *rescale,
++    uint thread_index) {
++  constexpr ushort M = RowsPerTile * QueryHeadsPerKVHead;
++  constexpr ushort N = SplashKvPageTokens;
++  constexpr ushort D = SplashKvHeadDimension;
++  uint visible_tokens = committed_tokens + active_rows;
++  uint pages = splash_attention_pages(visible_tokens);
++  uint per_split = splash_attention_pages_per_split(pages, splits);
++  uint page_begin = split * per_split;
++  if (page_begin >= pages)
++    return;
++  uint page_end = min(pages, page_begin + per_split);
++  if (thread_index < M) {
++    row_max[thread_index] = -INFINITY;
++    row_sum[thread_index] = 0.0f;
++  }
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++
++  // int4b_format tensors take byte pointers and the dense layout: element
++  // (d, n) of a page slab at d + n * D, keys and values alike.
++  using Int4Tensor = tensor<device int4b_format, dextents<int, 2>, tensor_inline>;
++  auto qt = tensor(tile_queries, dextents<int, 2>{D, M}, array<int, 2>{1, D});
++  auto st = tensor(scores, dextents<int, 2>{N, M}, array<int, 2>{1, N});
++  auto pt = tensor(probabilities, dextents<int, 2>{N, M}, array<int, 2>{1, N});
++  auto p0 = pt.slice<N, M>(0, 0);
++  auto q0 = qt.slice<D, M>(0, 0);
++  auto operand_type = Int4Tensor(static_cast<device uchar *>(nullptr), dextents<int, 2>{D, N});
++  auto k0 = operand_type.template slice<D, N>(0, 0);
++  auto v0 = operand_type.template slice<D, N>(0, 0);
++  const SplashTurboInt4Addressing<KVHeads> addressing(kv, kv_head);
++  constexpr auto qk_descriptor =
++      matmul2d_descriptor(M, N, D, false, true, false,
++                          matmul2d_descriptor::mode::multiply);
++  // Token-major values: PV takes them untransposed.
++  constexpr auto pv_descriptor =
++      matmul2d_descriptor(M, D, N, false, false, true,
++                          matmul2d_descriptor::mode::multiply_accumulate);
++  matmul2d<qk_descriptor, execution_simdgroups<8>> qk;
++  matmul2d<pv_descriptor, execution_simdgroups<8>> pv;
++  auto running = pv.template get_destination_cooperative_tensor<
++      decltype(p0), decltype(v0), float>();
++  const bool running_full =
++      uint(running.get_capacity()) * (8u * 32u) == uint(M) * D;
++#pragma unroll
++  for (ushort index = 0; index < running.get_capacity(); ++index) {
++    if (running_full || running.is_valid_element(index))
++      running[index] = 0.0f;
++  }
++
++  for (uint page = page_begin; page < page_end; ++page) {
++    const SplashTurboInt4PageTensors tensors = addressing.page(page_table[page]);
++    uint token_start = page * N;
++    auto kt = Int4Tensor(tensors.keys, dextents<int, 2>{D, N});
++    auto vt = Int4Tensor(tensors.values, dextents<int, 2>{D, N});
++    auto page_scores = qk.template get_destination_cooperative_tensor<
++        decltype(q0), decltype(k0), float>();
++    auto ks = kt.template slice<D, N>(0, 0);
++    qk.run(q0, ks, page_scores);
++    page_scores.store(st.slice<N, M>(0, 0));
++    if (thread_index == 0)
++      atomic_store_explicit(rescale, 0u, memory_order_relaxed);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    splash_attention_page_softmax<QueryHeadsPerKVHead, RowsPerTile, true>(
++        scores, probabilities, row_max, row_sum, previous_scale, rescale,
++        reinterpret_cast<device const float4 *>(tensors.key_scales),
++        reinterpret_cast<device const float4 *>(tensors.value_scales), token_start,
++        visible_tokens, committed_tokens, active_rows, thread_index);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    if (atomic_load_explicit(rescale, memory_order_relaxed)) {
++#pragma unroll
++      for (ushort index = 0; index < running.get_capacity(); ++index) {
++        if (!running_full && !running.is_valid_element(index))
++          continue;
++        auto coordinates = running.get_multidimensional_index(index);
++        running[index] *= previous_scale[coordinates[1]];
++      }
++    }
++    auto vs = vt.template slice<D, N>(0, 0);
++    pv.run(p0, vs, running);
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++  }
++  auto target = tensor(partials + slot * M * D, dextents<int, 2>{D, M},
++                       array<int, 2>{1, D});
++  running.store(target.slice<D, M>(0, 0));
++  if (thread_index < M) {
++    statistics[(slot * M + thread_index) * 2] = row_max[thread_index];
++    statistics[(slot * M + thread_index) * 2 + 1] = row_sum[thread_index];
++  }
+ }
+diff --git a/runtime/metal/kernels/common/paged_store_row.h b/runtime/metal/kernels/common/paged_store_row.h
+index 7833b42..552e2bc 100644
+--- a/runtime/metal/kernels/common/paged_store_row.h
++++ b/runtime/metal/kernels/common/paged_store_row.h
+@@ -3,6 +3,7 @@
+ #include "metal/abi/PagedAttention.h"
+ #include "metal/kernels/common/kv_extent.h"
+ #include "metal/kernels/common/kv_paging.h"
++#include "metal/kernels/common/turbo_kv.h"
+ #include <metal_stdlib>
+ 
+ using namespace metal;
+@@ -38,10 +39,159 @@ inline ulong splash_current_value_index(uint stride, uint head, uint token,
+   return (ulong(head) * SplashKvHeadDimension + dimension) * stride + token;
+ }
+ 
++// The CacheElement of TurboQuant pages (turbo_kv.h): a tag, as their packed
++// planes have no per-element type.
++struct SplashTurboKv {};
++
++// A TurboQuant row: the 256 lanes stage the row in threadgroup memory, then
++// simdgroups 0 and 1 each normalize, rotate and quantize one 128-dimension
++// group, ballot its index bits into planes and store the corrected norm.
++// `staging` holds SplashKvHeadDimension floats.
++template <uint KVHeads>
++__attribute__((always_inline)) inline void splash_store_turbo_row(
++    device const bfloat *chunk_keys, device const bfloat *chunk_values,
++    device const SplashKvPage *page_table,
++    constant SplashChunkedPrefillParams &params, threadgroup float *staging,
++    bool value_tensor, uint head, uint chunk_token, uint dimension,
++    uint simd_lane, uint simd_group) {
++  uint logical_token = params.committed_tokens + chunk_token;
++  const SplashKvPage page = page_table[logical_token / SplashKvPageTokens];
++  const SplashTurboPageTensors slab =
++      SplashTurboAddressing<KVHeads>(params.kv, head).page(page);
++  uint page_token = logical_token % SplashKvPageTokens;
++  ulong source_index =
++      value_tensor ? splash_current_value_index(params.chunk_stride, head,
++                                                  chunk_token, dimension)
++                   : splash_current_key_index(params.chunk_stride, head,
++                                                chunk_token, dimension);
++  staging[dimension] =
++      float(value_tensor ? chunk_values[source_index] : chunk_keys[source_index]);
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++  if (simd_group >= SplashTurboGroups)
++    return;
++  const uint group = simd_group;
++  float x[4];
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    x[r] = staging[group * SplashTurboGroup + 32 * r + simd_lane];
++  const float norm =
++      sqrt(simd_sum(x[0] * x[0] + x[1] * x[1] + x[2] * x[2] + x[3] * x[3]));
++  const float inverse_norm = norm > 1e-10f ? 1.0f / norm : 0.0f;
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    x[r] *= inverse_norm;
++  splash_turbo_rotate(x, simd_lane, false);
++  uint index[4];
++  float reconstructed = 0.0f;
++#pragma unroll
++  for (uint r = 0; r < 4; ++r) {
++    index[r] = value_tensor ? splash_turbo_index3(x[r]) : splash_turbo_index4(x[r]);
++    const float centroid = value_tensor ? SplashTurboCentroids3[index[r]]
++                                        : SplashTurboCentroids4[index[r]];
++    reconstructed += centroid * centroid;
++  }
++  const float reconstructed_norm = sqrt(simd_sum(reconstructed));
++  const half stored_norm =
++      half(reconstructed_norm > 1e-10f ? norm / reconstructed_norm : norm);
++  const uint planes = value_tensor ? SplashTurboValuePlanes : SplashTurboKeyPlanes;
++  device uint *row_planes =
++      (value_tensor ? slab.value_planes : slab.key_planes) +
++      page_token * SplashTurboChunks * planes;
++#pragma unroll
++  for (uint r = 0; r < 4; ++r) {
++    const uint chunk = group * 4 + r;
++    for (uint plane = 0; plane < planes; ++plane) {
++      const uint word = splash_turbo_ballot((index[r] >> plane) & 1u);
++      if (simd_lane == 0)
++        row_planes[chunk * planes + plane] = word;
++    }
++  }
++  if (simd_lane == 0)
++    (value_tensor ? slab.value_norms : slab.key_norms)[page_token * SplashTurboGroups + group] =
++        stored_norm;
++}
++
++// The CacheElement of TurboQuant int4 pages (turbo_kv.h).
++struct SplashTurboInt4Kv {};
++
++// A TurboQuant int4 row: the lanes stage the row, then simdgroup 0 rotates
++// the whole head vector, takes its absmax scale and packs 8 elements per uint
++// (element 2i in the low nibble of byte i, as MPP reads int4b_format).
++template <uint KVHeads>
++__attribute__((always_inline)) inline void splash_store_turbo_int4_row(
++    device const bfloat *chunk_keys, device const bfloat *chunk_values,
++    device const SplashKvPage *page_table,
++    constant SplashChunkedPrefillParams &params, threadgroup float *staging,
++    bool value_tensor, uint head, uint chunk_token, uint dimension,
++    uint simd_lane, uint simd_group) {
++  uint logical_token = params.committed_tokens + chunk_token;
++  const SplashKvPage page = page_table[logical_token / SplashKvPageTokens];
++  const SplashTurboInt4PageTensors slab =
++      SplashTurboInt4Addressing<KVHeads>(params.kv, head).page(page);
++  uint page_token = logical_token % SplashKvPageTokens;
++  ulong source_index =
++      value_tensor ? splash_current_value_index(params.chunk_stride, head,
++                                                  chunk_token, dimension)
++                   : splash_current_key_index(params.chunk_stride, head,
++                                                chunk_token, dimension);
++  staging[dimension] =
++      float(value_tensor ? chunk_values[source_index] : chunk_keys[source_index]);
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++  if (simd_group != 0)
++    return;
++  float x[8];
++#pragma unroll
++  for (uint r = 0; r < 8; ++r)
++    x[r] = staging[32 * r + simd_lane];
++  splash_turbo_rotate256(x, simd_lane, false);
++  // All 16 int4 codes (-8..7): the side with the larger magnitude gets the 8th level by the sign
++  // of the step. The step covers min(clip * rms, max |x|) and the scale is then refit by least
++  // squares over the codes. That is ~17% lower reconstruction error than absmax / 7, with the same
++  // bytes and the same decode (code * scale), so the attention kernels are unchanged.
++  float local_positive = 0.0f, local_negative = 0.0f, local_square = 0.0f;
++#pragma unroll
++  for (uint r = 0; r < 8; ++r) {
++    local_positive = max(local_positive, x[r]);
++    local_negative = max(local_negative, -x[r]);
++    local_square += x[r] * x[r];
++  }
++  const float positive = simd_max(local_positive);
++  const float negative = simd_max(local_negative);
++  const float rms = sqrt(simd_sum(local_square) * (1.0f / float(SplashKvHeadDimension)));
++  const float half_range = min(SplashTurboInt4Clip * rms, max(positive, negative)) * 0.125f;
++  const float step = positive > negative ? -half_range : half_range;
++  const float inverse = half_range > 0.0f ? 1.0f / step : 0.0f;
++  int codes[8];
++  float local_xc = 0.0f, local_cc = 0.0f;
++#pragma unroll
++  for (uint r = 0; r < 8; ++r) {
++    codes[r] = clamp(int(rint(x[r] * inverse)), -8, 7);
++    local_xc += x[r] * float(codes[r]);
++    local_cc += float(codes[r] * codes[r]);
++  }
++  const float xc = simd_sum(local_xc);
++  const float cc = simd_sum(local_cc);
++  const float scale = cc > 0.0f ? xc / cc : 0.0f;
++  device uint *row = reinterpret_cast<device uint *>(
++      (value_tensor ? slab.values : slab.keys) + page_token * SplashTurboInt4RowBytes);
++#pragma unroll
++  for (uint r = 0; r < 8; ++r) {
++    uint word = (uint(codes[r]) & 0xFu) << (4 * (simd_lane & 7u));
++    word |= simd_shuffle_xor(word, ushort(1));
++    word |= simd_shuffle_xor(word, ushort(2));
++    word |= simd_shuffle_xor(word, ushort(4));
++    if ((simd_lane & 7u) == 0)
++      row[r * 4 + simd_lane / 8] = word;     // elements 32r + 8k .. 32r + 8k + 7
++  }
++  if (simd_lane == 0)
++    (value_tensor ? slab.value_scales : slab.key_scales)[page_token] = scale;
++}
++
+ // One lane per dimension stores a current row in its final page slot.
+-// INT8 derives a per-row scale; BF16 copies the original bits. Slots are
+-// addressed inside the head's slab of the page: the page index functions at
+-// page zero and head zero.
++// INT8 derives a per-row scale; BF16 copies the original bits; TurboQuant
++// quantizes the row as above and needs `maxima` to hold the whole row. Slots
++// are addressed inside the head's slab of the page: the page index functions
++// at page zero and head zero.
+ template <uint KVHeads, typename CacheElement>
+ __attribute__((always_inline)) inline void splash_store_kv_row(
+     device const bfloat *chunk_keys, device const bfloat *chunk_values,
+@@ -49,6 +199,17 @@ __attribute__((always_inline)) inline void splash_store_kv_row(
+     constant SplashChunkedPrefillParams &params, threadgroup float *maxima,
+     bool value_tensor, uint head, uint chunk_token, uint dimension,
+     uint simd_lane, uint simd_group) {
++  if constexpr (is_same<CacheElement, SplashTurboKv>::value) {
++    splash_store_turbo_row<KVHeads>(chunk_keys, chunk_values, page_table, params, maxima,
++                                    value_tensor, head, chunk_token, dimension,
++                                    simd_lane, simd_group);
++    return;
++  } else if constexpr (is_same<CacheElement, SplashTurboInt4Kv>::value) {
++    splash_store_turbo_int4_row<KVHeads>(chunk_keys, chunk_values, page_table, params, maxima,
++                                         value_tensor, head, chunk_token, dimension,
++                                         simd_lane, simd_group);
++    return;
++  } else {
+   uint logical_token = params.committed_tokens + chunk_token;
+   const SplashKvPage page = page_table[logical_token / SplashKvPageTokens];
+   const SplashKvPageTensors<CacheElement> slab =
+@@ -100,4 +261,5 @@ __attribute__((always_inline)) inline void splash_store_kv_row(
+         slab.key_scales[splash_q8_scale_index<KVHeads>(0, 0, page_token)] = scale;
+     }
+   }
++  }
+ }
+diff --git a/runtime/metal/kernels/common/turbo_kv.h b/runtime/metal/kernels/common/turbo_kv.h
+new file mode 100644
+index 0000000..3dbba17
+--- /dev/null
++++ b/runtime/metal/kernels/common/turbo_kv.h
+@@ -0,0 +1,302 @@
++#pragma once
++
++#include "metal/abi/KvExtent.h"
++#include "metal/kernels/common/kv_extent.h"
++#include "metal/kernels/common/kv_paging.h"
++#include <metal_stdlib>
++
++using namespace metal;
++
++// TurboQuant KV pages (kv::Format::Turbo): keys at 4 bits and values at 3
++// bits per element, after the PolarQuant recipe of TurboQuant (arXiv
++// 2504.19874) as atomic-llama-cpp-turboquant implements it:
++//
++//   per 128 dimensions of a head vector x: n = |x|, u = x / n,
++//   r = S2 H S1 u   (S1, S2 fixed random signs, H the normalized
++//                    128-point Walsh-Hadamard transform),
++//   idx_i = nearest Lloyd-Max centroid of r_i for N(0, 1/128),
++//   stored norm = n / |c(idx)|, so the dequantized c(idx) * norm keeps |x|.
++//
++// Dequantized vectors stay rotated: rotating the queries the same way keeps
++// every dot product, and the attention output is rotated back once per row.
++// Signs and centroids match the llama.cpp fork (seed 42), so the arithmetic
++// is the one its turbo4 keys and turbo3 values use; only the packing differs.
++//
++// Packing: token-major bit-planes. Per (page, KV head, token) a key row is
++// 8 chunks of 32 dimensions x 4 planes of one uint (128 bytes); a value row
++// is 8 chunks x 3 planes (96 bytes). Bit j of plane p of chunk c is bit p of
++// dimension 32c + j's index: one simd_ballot writes a plane, and one load per
++// plane serves a chunk. Norms are fp16, two per (page, KV head, token) for
++// each tensor, in the regions that hold the INT8 scales.
++
++// The element type the attention tile dequantizes pages into for the MPP
++// products (paged_attention_tile.h).
++typedef bfloat SplashTurboTileElement;
++
++constant constexpr uint SplashTurboGroup = 128;
++constant constexpr uint SplashTurboGroups = SPLASH_KV_HEAD_DIMENSION / SplashTurboGroup;
++constant constexpr uint SplashTurboChunks = SPLASH_KV_HEAD_DIMENSION / 32;
++constant constexpr uint SplashTurboKeyPlanes = 4;
++constant constexpr uint SplashTurboValuePlanes = 3;
++
++// 4-bit Lloyd-Max centroids for N(0, 1/128) and their decision midpoints.
++constant constexpr float SplashTurboCentroids4[16] = {
++    -0.173926f, -0.117195f, -0.089527f, -0.068756f, -0.051262f, -0.035597f,
++    -0.020989f, -0.006938f, 0.006938f,  0.020989f,  0.035597f,  0.051262f,
++    0.068756f,  0.089527f,  0.117195f,  0.173926f};
++constant constexpr float SplashTurboMidpoints4[15] = {
++    -0.145560f, -0.103361f, -0.079142f, -0.060009f, -0.043430f,
++    -0.028293f, -0.013963f, 0.000000f,  0.013963f,  0.028293f,
++    0.043430f,  0.060009f,  0.079142f,  0.103361f,  0.145560f};
++// 3-bit centroids and midpoints.
++constant constexpr float SplashTurboCentroids3[8] = {
++    -0.190685f, -0.117832f, -0.065717f, -0.021460f,
++    0.021460f,  0.065717f,  0.117832f,  0.190685f};
++constant constexpr float SplashTurboMidpoints3[7] = {
++    -0.154259f, -0.091775f, -0.043589f, 0.000000f,
++    0.043589f,  0.091775f,  0.154259f};
++
++// The random signs S1 and S2 (seed 42) as masks, a set bit negative. Element
++// 32r + l of a 128-dimension group is bit l of word r: the strided layout in
++// which lane l of a simdgroup holds elements l, l+32, l+64 and l+96.
++constant constexpr uint SplashTurboSigns1[4] = {0xe46a0359u, 0x42f85949u,
++                                                0xa4c63bbbu, 0x49f250a9u};
++constant constexpr uint SplashTurboSigns2[4] = {0x16acee90u, 0x3f628fdcu,
++                                                0xb7a5357au, 0xbea56562u};
++
++inline float splash_turbo_sign(constant const uint *masks, uint element_word,
++                               uint lane) {
++  return (masks[element_word] >> lane) & 1u ? -1.0f : 1.0f;
++}
++
++// The normalized 128-point Walsh-Hadamard transform of one group held
++// strided across a simdgroup (x[r] is element 32r + lane). Strides below 32
++// pair lanes, 32 and 64 pair a lane's own registers; the butterflies commute.
++inline void splash_turbo_hadamard(thread float (&x)[4], uint lane) {
++#pragma unroll
++  for (uint stride = 1; stride < 32; stride <<= 1) {
++    const bool upper = lane & stride;
++#pragma unroll
++    for (uint r = 0; r < 4; ++r) {
++      const float partner = simd_shuffle_xor(x[r], ushort(stride));
++      x[r] = upper ? partner - x[r] : x[r] + partner;
++    }
++  }
++  float a = x[0], b = x[1], c = x[2], d = x[3];
++  x[0] = a + b, x[1] = a - b, x[2] = c + d, x[3] = c - d;   // stride 32
++  a = x[0], b = x[1], c = x[2], d = x[3];
++  x[0] = a + c, x[1] = b + d, x[2] = a - c, x[3] = b - d;   // stride 64
++  constexpr float inverse_sqrt_128 = 0.08838834764831845f;
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    x[r] *= inverse_sqrt_128;
++}
++
++// Forward rotation S2 H S1 (keys and values when stored, queries before
++// attention) or its inverse S1 H S2 (the attention output).
++inline void splash_turbo_rotate(thread float (&x)[4], uint lane, bool inverse) {
++  constant const uint *first = inverse ? SplashTurboSigns2 : SplashTurboSigns1;
++  constant const uint *second = inverse ? SplashTurboSigns1 : SplashTurboSigns2;
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    x[r] *= splash_turbo_sign(first, r, lane);
++  splash_turbo_hadamard(x, lane);
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    x[r] *= splash_turbo_sign(second, r, lane);
++}
++
++// Nearest centroid: the number of midpoints at or below the value, by
++// branchless binary search (the fork's `val < mid[k]` chain, same ties).
++inline uint splash_turbo_index4(float value) {
++  uint index = value >= SplashTurboMidpoints4[7] ? 8u : 0u;
++  index += value >= SplashTurboMidpoints4[index + 3] ? 4u : 0u;
++  index += value >= SplashTurboMidpoints4[index + 1] ? 2u : 0u;
++  index += value >= SplashTurboMidpoints4[index] ? 1u : 0u;
++  return index;
++}
++
++inline uint splash_turbo_index3(float value) {
++  uint index = value >= SplashTurboMidpoints3[3] ? 4u : 0u;
++  index += value >= SplashTurboMidpoints3[index + 1] ? 2u : 0u;
++  index += value >= SplashTurboMidpoints3[index] ? 1u : 0u;
++  return index;
++}
++
++inline uint splash_turbo_ballot(bool bit) {
++  return uint(static_cast<simd_vote::vote_t>(simd_ballot(bit)));
++}
++
++// Bytes of one tensor of one page of one layer for KVHeads heads, the host
++// Layout's numbers (ops/PagedKv.hpp) on the kernel side.
++template <uint KVHeads> struct SplashTurboPageBytes {
++  static constexpr constant uint KeyData =
++      KVHeads * SplashKvPageTokens * SplashTurboChunks * SplashTurboKeyPlanes * 4;
++  static constexpr constant uint ValueData =
++      KVHeads * SplashKvPageTokens * SplashTurboChunks * SplashTurboValuePlanes * 4;
++  static constexpr constant uint Norms =
++      KVHeads * SplashKvPageTokens * SplashTurboGroups * 2;
++};
++
++// One KV head's slab of a TurboQuant page: its 32 token rows of key and
++// value planes and their norms.
++struct SplashTurboPageTensors {
++  device uint *key_planes;       // [token][chunk][4]
++  device uint *value_planes;     // [token][chunk][3]
++  device half *key_norms;        // [token][group]
++  device half *value_norms;      // [token][group]
++};
++
++template <uint KVHeads> struct SplashTurboAddressing {
++  using Bytes = SplashTurboPageBytes<KVHeads>;
++  uint layer_offset;
++  uint head;
++  ulong key_norms_offset;
++  ulong values_offset;
++  ulong value_norms_offset;
++
++  SplashTurboAddressing(SplashKvLayer kv, uint kv_head)
++      : layer_offset(kv.offset), head(kv_head) {
++    const SplashKvPageGeometry geometry = {Bytes::KeyData, Bytes::Norms,
++                                           Bytes::ValueData, Bytes::Norms};
++    key_norms_offset =
++        splash_kv_geometry_offset(kv.extent_pages, geometry, 0, SPLASH_KV_KEY_SCALES, 0);
++    values_offset =
++        splash_kv_geometry_offset(kv.extent_pages, geometry, 0, SPLASH_KV_VALUES, 0);
++    value_norms_offset =
++        splash_kv_geometry_offset(kv.extent_pages, geometry, 0, SPLASH_KV_VALUE_SCALES, 0);
++  }
++
++  SplashTurboPageTensors page(SplashKvPage entry) const {
++    const uint index = splash_kv_page_index(entry);
++    device uchar *region = splash_kv_extent(entry, index) + layer_offset;
++    constexpr uint KeyWordsPerHead = SplashKvPageTokens * SplashTurboChunks * SplashTurboKeyPlanes;
++    constexpr uint ValueWordsPerHead =
++        SplashKvPageTokens * SplashTurboChunks * SplashTurboValuePlanes;
++    constexpr uint NormsPerHead = SplashKvPageTokens * SplashTurboGroups;
++    SplashTurboPageTensors tensors{};
++    tensors.key_planes = reinterpret_cast<device uint *>(region) +
++                         ulong(index) * (KVHeads * KeyWordsPerHead) + head * KeyWordsPerHead;
++    tensors.value_planes = reinterpret_cast<device uint *>(region + values_offset) +
++                           ulong(index) * (KVHeads * ValueWordsPerHead) +
++                           head * ValueWordsPerHead;
++    tensors.key_norms = reinterpret_cast<device half *>(region + key_norms_offset) +
++                        ulong(index) * (KVHeads * NormsPerHead) + head * NormsPerHead;
++    tensors.value_norms = reinterpret_cast<device half *>(region + value_norms_offset) +
++                          ulong(index) * (KVHeads * NormsPerHead) + head * NormsPerHead;
++    return tensors;
++  }
++};
++
++// ---- TurboQuant int4 pages (kv::Format::TurboInt4) ------------------------
++// The same idea mapped onto the GPU's native 4-bit matrix operands: each head
++// vector of keys or values is rotated by a randomized 256-point Hadamard
++// transform R = S2 H256 S1 (one rotation over the whole head, so one scale
++// fits it), then quantized symmetrically to int4 (-7..7) with one fp32
++// absmax scale per (token, KV head), the INT8 scale layout. MPP reads the
++// pages as int4b_format (two's complement, element 2i in the low nibble of
++// byte i), keys and values token-major: no dequantization in the attention
++// loop. Queries are rotated by R before attention and the output by R^T after.
++
++// turbo-int4 clips each rotated row at this many RMS before quantizing (step 2 of
++// splash/IMPROVEMENT_PLAN.md). A change alters stored pages: bump the persistent-cache revision.
++constant constexpr float SplashTurboInt4Clip = 2.7f;
++constant constexpr uint SplashTurboInt4RowBytes = SPLASH_KV_HEAD_DIMENSION / 2;
++
++// Random signs (Python random.Random(250419874)), element 32r + l in bit l of
++// word r.
++constant constexpr uint SplashTurboSigns256First[8] = {
++    0xa097d901u, 0xa038e573u, 0xca2221ffu, 0x45093648u,
++    0x290f5046u, 0x0de9bed1u, 0x012987dbu, 0xa51d810eu};
++constant constexpr uint SplashTurboSigns256Second[8] = {
++    0x5c73128au, 0x6cc37310u, 0xc8bab385u, 0xd9d9ff54u,
++    0x63ee4d71u, 0xa2b23130u, 0x32884643u, 0xb6e6c2f6u};
++
++// The normalized 256-point Walsh-Hadamard transform of one head vector held
++// strided across a simdgroup (x[r] is element 32r + lane).
++inline void splash_turbo_hadamard256(thread float (&x)[8], uint lane) {
++#pragma unroll
++  for (uint stride = 1; stride < 32; stride <<= 1) {
++    const bool upper = lane & stride;
++#pragma unroll
++    for (uint r = 0; r < 8; ++r) {
++      const float partner = simd_shuffle_xor(x[r], ushort(stride));
++      x[r] = upper ? partner - x[r] : x[r] + partner;
++    }
++  }
++#pragma unroll
++  for (uint step = 1; step < 8; step <<= 1) {               // strides 32, 64, 128
++#pragma unroll
++    for (uint r = 0; r < 8; ++r) {
++      if (r & step)
++        continue;
++      const float a = x[r], b = x[r + step];
++      x[r] = a + b;
++      x[r + step] = a - b;
++    }
++  }
++  constexpr float inverse_sqrt_256 = 0.0625f;
++#pragma unroll
++  for (uint r = 0; r < 8; ++r)
++    x[r] *= inverse_sqrt_256;
++}
++
++inline void splash_turbo_rotate256(thread float (&x)[8], uint lane, bool inverse) {
++  constant const uint *first = inverse ? SplashTurboSigns256Second : SplashTurboSigns256First;
++  constant const uint *second = inverse ? SplashTurboSigns256First : SplashTurboSigns256Second;
++#pragma unroll
++  for (uint r = 0; r < 8; ++r)
++    x[r] *= splash_turbo_sign(first, r, lane);
++  splash_turbo_hadamard256(x, lane);
++#pragma unroll
++  for (uint r = 0; r < 8; ++r)
++    x[r] *= splash_turbo_sign(second, r, lane);
++}
++
++// Bytes of one tensor of one page of one layer: 4-bit data and fp32 scales,
++// keys and values alike (the Layout of kv::Format::TurboInt4).
++template <uint KVHeads> struct SplashTurboInt4PageBytes {
++  static constexpr constant uint Data = KVHeads * SplashKvPageTokens * SplashTurboInt4RowBytes;
++  static constexpr constant uint Scale = KVHeads * SplashKvPageTokens * sizeof(float);
++};
++
++// One KV head's slab of a TurboQuant int4 page: 32 token rows of 128 bytes
++// for keys and for values, and their scales.
++struct SplashTurboInt4PageTensors {
++  device uchar *keys;
++  device uchar *values;
++  device float *key_scales;
++  device float *value_scales;
++};
++
++template <uint KVHeads> struct SplashTurboInt4Addressing {
++  using Bytes = SplashTurboInt4PageBytes<KVHeads>;
++  uint layer_offset;
++  uint head;
++  ulong key_scales_offset;
++  ulong values_offset;
++  ulong value_scales_offset;
++
++  SplashTurboInt4Addressing(SplashKvLayer kv, uint kv_head)
++      : layer_offset(kv.offset), head(kv_head),
++        key_scales_offset(splash_kv_offset(kv.extent_pages, Bytes::Data, Bytes::Scale, 0,
++                                           SPLASH_KV_KEY_SCALES, 0)),
++        values_offset(splash_kv_offset(kv.extent_pages, Bytes::Data, Bytes::Scale, 0,
++                                       SPLASH_KV_VALUES, 0)),
++        value_scales_offset(splash_kv_offset(kv.extent_pages, Bytes::Data, Bytes::Scale, 0,
++                                             SPLASH_KV_VALUE_SCALES, 0)) {}
++
++  SplashTurboInt4PageTensors page(SplashKvPage entry) const {
++    const uint index = splash_kv_page_index(entry);
++    device uchar *region = splash_kv_extent(entry, index) + layer_offset;
++    const ulong slab = ulong(index) * KVHeads + head;
++    SplashTurboInt4PageTensors tensors{};
++    tensors.keys = region + slab * (SplashKvPageTokens * SplashTurboInt4RowBytes);
++    tensors.values = region + values_offset + slab * (SplashKvPageTokens * SplashTurboInt4RowBytes);
++    tensors.key_scales =
++        reinterpret_cast<device float *>(region + key_scales_offset) + slab * SplashKvPageTokens;
++    tensors.value_scales =
++        reinterpret_cast<device float *>(region + value_scales_offset) + slab * SplashKvPageTokens;
++    return tensors;
++  }
++};
+diff --git a/runtime/metal/kernels/decode/paged_attention.metal b/runtime/metal/kernels/decode/paged_attention.metal
+index cfd64c0..c519018 100644
+--- a/runtime/metal/kernels/decode/paged_attention.metal
++++ b/runtime/metal/kernels/decode/paged_attention.metal
+@@ -103,16 +103,64 @@ PAGED_VERIFY_SPLIT(verify_attention_q8_split_kv2_g8, 2, 8, int8_t)
+ PAGED_VERIFY_SPLIT(verify_attention_bf16_split, 4, 6, bfloat)
+ PAGED_VERIFY_SPLIT(verify_attention_bf16_split_kv2_g8, 2, 8, bfloat)
+ #undef PAGED_VERIFY_SPLIT
++
++// TurboQuant entries dequantize each page into kv_tile (paged_attention_tile.h).
++#define PAGED_VERIFY_TURBO_SPLIT(Name, Heads, Group)                           \
++  kernel void Name(                                                            \
++      device bfloat *queries [[buffer(0)]],                                    \
++      device float *partials [[buffer(1)]],                                    \
++      device float *statistics [[buffer(2)]],                                  \
++      device const SplashKvPage *page_table0 [[buffer(3)]],                    \
++      device const SplashKvPage *page_table1 [[buffer(4)]],                    \
++      device const SplashKvPage *page_table2 [[buffer(5)]],                    \
++      device const SplashKvPage *page_table3 [[buffer(6)]],                    \
++      constant SplashVerifyAttentionParams *params [[buffer(7)]],              \
++      uint3 group [[threadgroup_position_in_grid]],                            \
++      uint thread_index [[thread_index_in_threadgroup]],                       \
++      uint simd_lane [[thread_index_in_simdgroup]],                            \
++      uint simd_group [[simdgroup_index_in_threadgroup]]) {                    \
++    PAGED_VERIFY_SCRATCH(Group)                                                \
++    alignas(16) threadgroup SplashTurboTileElement kv_tile[N * SplashKvHeadDimension];         \
++    PAGED_VERIFY_TILE_AT(Heads, Group)                                         \
++    splash_paged_attention_turbo_tile<Heads, Group, SPLASH_TARGET_VERIFY_ROWS>( \
++        tile.queries, tile.page_table, params[group.z].kv, tile.kv_head,       \
++        tile.committed_tokens, SPLASH_TARGET_VERIFY_ROWS, tile.splits,         \
++        tile.split, partials, statistics, tile.slot, scores, probabilities,    \
++        row_max, row_sum, previous_scale, &rescale, kv_tile, thread_index,     \
++        simd_lane, simd_group);                                                \
++  }
++
++PAGED_VERIFY_TURBO_SPLIT(verify_attention_turbo_split, 4, 6)
++PAGED_VERIFY_TURBO_SPLIT(verify_attention_turbo_split_kv2_g8, 2, 8)
++#undef PAGED_VERIFY_TURBO_SPLIT
++
++// TurboQuant int4 entries: the INT8 scratch, 4-bit operands read by MPP.
++#define PAGED_VERIFY_TURBO_INT4_SPLIT(Name, Heads, Group)                      \
++  PAGED_VERIFY_SPLIT_SIGNATURE(Name) {                                         \
++    PAGED_VERIFY_SCRATCH(Group)                                                \
++    PAGED_VERIFY_TILE_AT(Heads, Group)                                         \
++    splash_paged_attention_turbo_int4_tile<Heads, Group,                       \
++                                           SPLASH_TARGET_VERIFY_ROWS>(         \
++        tile.queries, tile.page_table, params[group.z].kv, tile.kv_head,       \
++        tile.committed_tokens, SPLASH_TARGET_VERIFY_ROWS, tile.splits,         \
++        tile.split, partials, statistics, tile.slot, scores, probabilities,    \
++        row_max, row_sum, previous_scale, &rescale, thread_index);             \
++  }
++
++PAGED_VERIFY_TURBO_INT4_SPLIT(verify_attention_turbo_int4_split, 4, 6)
++PAGED_VERIFY_TURBO_INT4_SPLIT(verify_attention_turbo_int4_split_kv2_g8, 2, 8)
++#undef PAGED_VERIFY_TURBO_INT4_SPLIT
+ #undef PAGED_VERIFY_TILE_AT
+ #undef PAGED_VERIFY_SCRATCH
+ #undef PAGED_VERIFY_SPLIT_SIGNATURE
+ 
+-template <uint KVHeads, uint QueryHeadsPerKVHead>
++template <uint KVHeads, uint QueryHeadsPerKVHead, uint Rotation = 0>
+ inline void splash_verify_attention_reduce_phase(
+     device const float *partials, device const float *statistics,
+     device bfloat *output,
+     constant SplashVerifyAttentionParams *params, uint3 group,
+-    uint thread_index, threadgroup float *weights, threadgroup float *group_values) {
++    uint thread_index, threadgroup float *weights, threadgroup float *group_values,
++    threadgroup float *rotation = nullptr) {
+   constexpr ushort M = SPLASH_TARGET_VERIFY_ROWS * QueryHeadsPerKVHead;
+   constexpr ushort D = SplashKvHeadDimension;
+   uint kv_head = group.x;
+@@ -125,13 +173,13 @@ inline void splash_verify_attention_reduce_phase(
+   constexpr ulong group_stride =
+       ulong(SPLASH_VERIFY_CHUNK_STRIDE) * QueryHeadsPerKVHead * D;
+   splash_attention_reduce_row<QueryHeadsPerKVHead,
+-                                   SPLASH_TARGET_VERIFY_ROWS>(
++                                   SPLASH_TARGET_VERIFY_ROWS, Rotation>(
+       partials, statistics,
+       output + (ulong(batch) * KVHeads + kv_head) * group_stride,
+       lane_params.committed_tokens, SPLASH_TARGET_VERIFY_ROWS,
+       lane_params.split_count,
+       (ulong(batch) * KVHeads + kv_head) * lane_params.slot_splits, fused_row,
+-      thread_index, weights, group_values);
++      thread_index, weights, group_values, rotation);
+ }
+ 
+ kernel void verify_attention_reduce(
+@@ -159,3 +207,64 @@ kernel void verify_attention_reduce_kv2_g8(
+   splash_verify_attention_reduce_phase<2, 8>(
+       partials, statistics, output, params, group, thread_index, weights, group_values);
+ }
++
++// TurboQuant reductions rotate each output row back to the model's basis.
++kernel void verify_attention_reduce_turbo(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashVerifyAttentionParams *params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashVerifyMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_verify_attention_reduce_phase<4, 6, SplashTurboGroup>(
++      partials, statistics, output, params, group, thread_index, weights, group_values,
++      rotation);
++}
++
++kernel void verify_attention_reduce_turbo_kv2_g8(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashVerifyAttentionParams *params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashVerifyMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_verify_attention_reduce_phase<2, 8, SplashTurboGroup>(
++      partials, statistics, output, params, group, thread_index, weights, group_values,
++      rotation);
++}
++
++kernel void verify_attention_reduce_turbo_int4(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashVerifyAttentionParams *params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashVerifyMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_verify_attention_reduce_phase<4, 6, SplashKvHeadDimension>(
++      partials, statistics, output, params, group, thread_index, weights, group_values,
++      rotation);
++}
++
++kernel void verify_attention_reduce_turbo_int4_kv2_g8(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashVerifyAttentionParams *params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashVerifyMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_verify_attention_reduce_phase<2, 8, SplashKvHeadDimension>(
++      partials, statistics, output, params, group, thread_index, weights, group_values,
++      rotation);
++}
+diff --git a/runtime/metal/kernels/decode/paged_attention_store.metal b/runtime/metal/kernels/decode/paged_attention_store.metal
+index 5251ccc..c8b6bfc 100644
+--- a/runtime/metal/kernels/decode/paged_attention_store.metal
++++ b/runtime/metal/kernels/decode/paged_attention_store.metal
+@@ -108,3 +108,79 @@ kernel void verify_attention_bf16_store_kv2_g8(
+       chunk_keys, chunk_values, page_table0, page_table1, page_table2,
+       page_table3, params, nullptr, group, thread_index, simd_lane, simd_group);
+ }
++
++// TurboQuant entries stage the whole row (paged_store_row.h).
++
++kernel void verify_attention_turbo_store(
++    device const bfloat *chunk_keys [[buffer(0)]],
++    device const bfloat *chunk_values [[buffer(1)]],
++    device const SplashKvPage *page_table0 [[buffer(2)]],
++    device const SplashKvPage *page_table1 [[buffer(3)]],
++    device const SplashKvPage *page_table2 [[buffer(4)]],
++    device const SplashKvPage *page_table3 [[buffer(5)]],
++    constant SplashChunkedPrefillParams *params [[buffer(6)]],
++    uint group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]],
++    uint simd_lane [[thread_index_in_simdgroup]],
++    uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_verify_phase<4, SplashTurboKv>(
++      chunk_keys, chunk_values, page_table0, page_table1, page_table2,
++      page_table3, params, staging, group, thread_index, simd_lane, simd_group);
++}
++
++kernel void verify_attention_turbo_store_kv2_g8(
++    device const bfloat *chunk_keys [[buffer(0)]],
++    device const bfloat *chunk_values [[buffer(1)]],
++    device const SplashKvPage *page_table0 [[buffer(2)]],
++    device const SplashKvPage *page_table1 [[buffer(3)]],
++    device const SplashKvPage *page_table2 [[buffer(4)]],
++    device const SplashKvPage *page_table3 [[buffer(5)]],
++    constant SplashChunkedPrefillParams *params [[buffer(6)]],
++    uint group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]],
++    uint simd_lane [[thread_index_in_simdgroup]],
++    uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_verify_phase<2, SplashTurboKv>(
++      chunk_keys, chunk_values, page_table0, page_table1, page_table2,
++      page_table3, params, staging, group, thread_index, simd_lane, simd_group);
++}
++
++// TurboQuant int4 entries stage the whole row (paged_store_row.h).
++
++kernel void verify_attention_turbo_int4_store(
++    device const bfloat *chunk_keys [[buffer(0)]],
++    device const bfloat *chunk_values [[buffer(1)]],
++    device const SplashKvPage *page_table0 [[buffer(2)]],
++    device const SplashKvPage *page_table1 [[buffer(3)]],
++    device const SplashKvPage *page_table2 [[buffer(4)]],
++    device const SplashKvPage *page_table3 [[buffer(5)]],
++    constant SplashChunkedPrefillParams *params [[buffer(6)]],
++    uint group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]],
++    uint simd_lane [[thread_index_in_simdgroup]],
++    uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_verify_phase<4, SplashTurboInt4Kv>(
++      chunk_keys, chunk_values, page_table0, page_table1, page_table2,
++      page_table3, params, staging, group, thread_index, simd_lane, simd_group);
++}
++
++kernel void verify_attention_turbo_int4_store_kv2_g8(
++    device const bfloat *chunk_keys [[buffer(0)]],
++    device const bfloat *chunk_values [[buffer(1)]],
++    device const SplashKvPage *page_table0 [[buffer(2)]],
++    device const SplashKvPage *page_table1 [[buffer(3)]],
++    device const SplashKvPage *page_table2 [[buffer(4)]],
++    device const SplashKvPage *page_table3 [[buffer(5)]],
++    constant SplashChunkedPrefillParams *params [[buffer(6)]],
++    uint group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]],
++    uint simd_lane [[thread_index_in_simdgroup]],
++    uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_verify_phase<2, SplashTurboInt4Kv>(
++      chunk_keys, chunk_values, page_table0, page_table1, page_table2,
++      page_table3, params, staging, group, thread_index, simd_lane, simd_group);
++}
+diff --git a/runtime/metal/kernels/prefill/paged_attention.metal b/runtime/metal/kernels/prefill/paged_attention.metal
+index 0c4d2b8..5a59f99 100644
+--- a/runtime/metal/kernels/prefill/paged_attention.metal
++++ b/runtime/metal/kernels/prefill/paged_attention.metal
+@@ -34,13 +34,76 @@ inline void splash_prefill_attention_split_phase(
+       previous_scale, rescale, thread_index);
+ }
+ 
++// The same split over TurboQuant pages (paged_attention_tile.h).
+ template <uint KVHeads, uint QueryHeadsPerKVHead>
++inline void splash_prefill_attention_turbo_split_phase(
++    device bfloat *queries, device float *partials,
++    device float *statistics, device const SplashKvPage *page_table,
++    constant SplashPrefillAttentionParams &params,
++    threadgroup float *scores, threadgroup bfloat *probabilities,
++    threadgroup float *row_max, threadgroup float *row_sum,
++    threadgroup float *previous_scale, threadgroup atomic_uint *rescale,
++    threadgroup SplashTurboTileElement *kv_tile, uint3 group, uint thread_index, uint simd_lane,
++    uint simd_group) {
++  constexpr uint D = SplashKvHeadDimension;
++  uint kv_head = group.x;
++  uint split = group.z;
++  uint tile = group.y;
++  uint tile_start = tile * SplashPrefillTileRows;
++  if (!splash_prefill_attention_contract_valid(params) ||
++      kv_head >= KVHeads || split >= params.split_count ||
++      tile_start >= params.rows)
++    return;
++  uint active_rows = min(SplashPrefillTileRows, params.rows - tile_start);
++  ulong tile_offset = (ulong(kv_head) * params.chunk_stride + tile_start) *
++                      QueryHeadsPerKVHead * D;
++  ulong slot = (ulong(tile) * KVHeads + kv_head) * params.split_count + split;
++  splash_paged_attention_turbo_tile<KVHeads, QueryHeadsPerKVHead,
++                                    SPLASH_PREFILL_ATTENTION_TILE_ROWS>(
++      queries + tile_offset, page_table, params.kv, kv_head,
++      params.committed_tokens + tile_start, active_rows, params.split_count, split,
++      partials, statistics, slot, scores, probabilities, row_max, row_sum,
++      previous_scale, rescale, kv_tile, thread_index, simd_lane, simd_group);
++}
++
++// The same split over TurboQuant int4 pages (paged_attention_tile.h).
++template <uint KVHeads, uint QueryHeadsPerKVHead>
++inline void splash_prefill_attention_turbo_int4_split_phase(
++    device bfloat *queries, device float *partials,
++    device float *statistics, device const SplashKvPage *page_table,
++    constant SplashPrefillAttentionParams &params,
++    threadgroup float *scores, threadgroup bfloat *probabilities,
++    threadgroup float *row_max, threadgroup float *row_sum,
++    threadgroup float *previous_scale, threadgroup atomic_uint *rescale, uint3 group,
++    uint thread_index) {
++  constexpr uint D = SplashKvHeadDimension;
++  uint kv_head = group.x;
++  uint split = group.z;
++  uint tile = group.y;
++  uint tile_start = tile * SplashPrefillTileRows;
++  if (!splash_prefill_attention_contract_valid(params) ||
++      kv_head >= KVHeads || split >= params.split_count ||
++      tile_start >= params.rows)
++    return;
++  uint active_rows = min(SplashPrefillTileRows, params.rows - tile_start);
++  ulong tile_offset = (ulong(kv_head) * params.chunk_stride + tile_start) *
++                      QueryHeadsPerKVHead * D;
++  ulong slot = (ulong(tile) * KVHeads + kv_head) * params.split_count + split;
++  splash_paged_attention_turbo_int4_tile<KVHeads, QueryHeadsPerKVHead,
++                                         SPLASH_PREFILL_ATTENTION_TILE_ROWS>(
++      queries + tile_offset, page_table, params.kv, kv_head,
++      params.committed_tokens + tile_start, active_rows, params.split_count, split,
++      partials, statistics, slot, scores, probabilities, row_max, row_sum,
++      previous_scale, rescale, thread_index);
++}
++
++template <uint KVHeads, uint QueryHeadsPerKVHead, uint Rotation = 0>
+ inline void splash_prefill_attention_reduce_phase(
+     device const float *partials, device const float *statistics,
+     device bfloat *output,
+     constant SplashPrefillAttentionParams &params, uint3 group,
+     uint thread_index, threadgroup float *weights,
+-    threadgroup float *group_values) {
++    threadgroup float *group_values, threadgroup float *rotation = nullptr) {
+   constexpr ushort M = SPLASH_PREFILL_ATTENTION_TILE_ROWS * QueryHeadsPerKVHead;
+   constexpr ushort D = SplashKvHeadDimension;
+   uint kv_head = group.x;
+@@ -55,11 +118,11 @@ inline void splash_prefill_attention_reduce_phase(
+   ulong tile_offset = (ulong(kv_head) * params.chunk_stride + tile_start) *
+                       QueryHeadsPerKVHead * D;
+   splash_attention_reduce_row<QueryHeadsPerKVHead,
+-                              SPLASH_PREFILL_ATTENTION_TILE_ROWS>(
++                              SPLASH_PREFILL_ATTENTION_TILE_ROWS, Rotation>(
+       partials, statistics, output + tile_offset,
+       params.committed_tokens + tile_start, active_rows, params.split_count,
+       (ulong(tile) * KVHeads + kv_head) * params.split_count, fused_row,
+-      thread_index, weights, group_values);
++      thread_index, weights, group_values, rotation);
+ }
+ 
+ #define PAGED_PREFILL_SPLIT(Name, Heads, Group, CacheElement)                  \
+@@ -92,6 +155,63 @@ PAGED_PREFILL_SPLIT(prefill_attention_bf16_split, 4, 6, bfloat)
+ PAGED_PREFILL_SPLIT(prefill_attention_bf16_split_kv2_g8, 2, 8, bfloat)
+ #undef PAGED_PREFILL_SPLIT
+ 
++#define PAGED_PREFILL_TURBO_SPLIT(Name, Heads, Group)                          \
++  kernel void Name(                                                            \
++      device bfloat *queries [[buffer(0)]],                                    \
++      device float *partials [[buffer(1)]],                                    \
++      device float *statistics [[buffer(2)]],                                  \
++      device const SplashKvPage *page_table [[buffer(3)]],                     \
++      constant SplashPrefillAttentionParams &params [[buffer(4)]],             \
++      uint3 group [[threadgroup_position_in_grid]],                            \
++      uint thread_index [[thread_index_in_threadgroup]],                       \
++      uint simd_lane [[thread_index_in_simdgroup]],                            \
++      uint simd_group [[simdgroup_index_in_threadgroup]]) {                    \
++    constexpr uint M = Group * SPLASH_PREFILL_ATTENTION_TILE_ROWS;             \
++    constexpr uint N = SplashKvPageTokens;                                     \
++    alignas(16) threadgroup float scores[M * N];                               \
++    alignas(16) threadgroup bfloat probabilities[M * N];                       \
++    alignas(16) threadgroup SplashTurboTileElement kv_tile[N * SplashKvHeadDimension];         \
++    threadgroup float row_max[M];                                              \
++    threadgroup float row_sum[M];                                              \
++    threadgroup float previous_scale[M];                                       \
++    threadgroup atomic_uint rescale;                                           \
++    splash_prefill_attention_turbo_split_phase<Heads, Group>(                  \
++        queries, partials, statistics, page_table, params, scores,             \
++        probabilities, row_max, row_sum, previous_scale, &rescale, kv_tile,    \
++        group, thread_index, simd_lane, simd_group);                           \
++  }
++
++PAGED_PREFILL_TURBO_SPLIT(prefill_attention_turbo_split, 4, 6)
++PAGED_PREFILL_TURBO_SPLIT(prefill_attention_turbo_split_kv2_g8, 2, 8)
++#undef PAGED_PREFILL_TURBO_SPLIT
++
++#define PAGED_PREFILL_TURBO_INT4_SPLIT(Name, Heads, Group)                     \
++  kernel void Name(                                                            \
++      device bfloat *queries [[buffer(0)]],                                    \
++      device float *partials [[buffer(1)]],                                    \
++      device float *statistics [[buffer(2)]],                                  \
++      device const SplashKvPage *page_table [[buffer(3)]],                     \
++      constant SplashPrefillAttentionParams &params [[buffer(4)]],             \
++      uint3 group [[threadgroup_position_in_grid]],                            \
++      uint thread_index [[thread_index_in_threadgroup]]) {                     \
++    constexpr uint M = Group * SPLASH_PREFILL_ATTENTION_TILE_ROWS;             \
++    constexpr uint N = SplashKvPageTokens;                                     \
++    alignas(16) threadgroup float scores[M * N];                               \
++    alignas(16) threadgroup bfloat probabilities[M * N];                       \
++    threadgroup float row_max[M];                                              \
++    threadgroup float row_sum[M];                                              \
++    threadgroup float previous_scale[M];                                       \
++    threadgroup atomic_uint rescale;                                           \
++    splash_prefill_attention_turbo_int4_split_phase<Heads, Group>(             \
++        queries, partials, statistics, page_table, params, scores,             \
++        probabilities, row_max, row_sum, previous_scale, &rescale, group,      \
++        thread_index);                                                         \
++  }
++
++PAGED_PREFILL_TURBO_INT4_SPLIT(prefill_attention_turbo_int4_split, 4, 6)
++PAGED_PREFILL_TURBO_INT4_SPLIT(prefill_attention_turbo_int4_split_kv2_g8, 2, 8)
++#undef PAGED_PREFILL_TURBO_INT4_SPLIT
++
+ kernel void prefill_attention_reduce(
+     device const float *partials [[buffer(0)]],
+     device const float *statistics [[buffer(1)]],
+@@ -119,3 +239,64 @@ kernel void prefill_attention_reduce_kv2_g8(
+       partials, statistics, output, params, group, thread_index, weights,
+       group_values);
+ }
++
++// TurboQuant reductions rotate each output row back to the model's basis.
++kernel void prefill_attention_reduce_turbo(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashPrefillAttentionParams &params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashPrefillMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_prefill_attention_reduce_phase<4, 6, SplashTurboGroup>(
++      partials, statistics, output, params, group, thread_index, weights,
++      group_values, rotation);
++}
++
++kernel void prefill_attention_reduce_turbo_kv2_g8(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashPrefillAttentionParams &params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashPrefillMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_prefill_attention_reduce_phase<2, 8, SplashTurboGroup>(
++      partials, statistics, output, params, group, thread_index, weights,
++      group_values, rotation);
++}
++
++kernel void prefill_attention_reduce_turbo_int4(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashPrefillAttentionParams &params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashPrefillMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_prefill_attention_reduce_phase<4, 6, SplashKvHeadDimension>(
++      partials, statistics, output, params, group, thread_index, weights,
++      group_values, rotation);
++}
++
++kernel void prefill_attention_reduce_turbo_int4_kv2_g8(
++    device const float *partials [[buffer(0)]],
++    device const float *statistics [[buffer(1)]],
++    device bfloat *output [[buffer(2)]],
++    constant SplashPrefillAttentionParams &params [[buffer(3)]],
++    uint3 group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]]) {
++  threadgroup float weights[SplashPrefillMaximumSplits];
++  threadgroup float group_values[8];
++  threadgroup float rotation[SplashKvHeadDimension];
++  splash_prefill_attention_reduce_phase<2, 8, SplashKvHeadDimension>(
++      partials, statistics, output, params, group, thread_index, weights,
++      group_values, rotation);
++}
+diff --git a/runtime/metal/kernels/prefill/paged_attention_store.metal b/runtime/metal/kernels/prefill/paged_attention_store.metal
+index 66f04ae..33ccfbb 100644
+--- a/runtime/metal/kernels/prefill/paged_attention_store.metal
++++ b/runtime/metal/kernels/prefill/paged_attention_store.metal
+@@ -86,3 +86,69 @@ kernel void prefill_attention_bf16_store_kv2_g8(
+       chunk_keys, chunk_values, page_table, params, nullptr, group,
+       thread_index, simd_lane, simd_group);
+ }
++
++// TurboQuant entries stage the whole row (paged_store_row.h).
++
++kernel void
++prefill_attention_turbo_store(device const bfloat *chunk_keys [[buffer(0)]],
++                              device const bfloat *chunk_values [[buffer(1)]],
++                              device const SplashKvPage *page_table [[buffer(2)]],
++                              constant SplashChunkedPrefillParams &params
++                              [[buffer(3)]],
++                              uint group [[threadgroup_position_in_grid]],
++                              uint thread_index [[thread_index_in_threadgroup]],
++                              uint simd_lane [[thread_index_in_simdgroup]],
++                              uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_chunk_phase<4, SplashTurboKv>(
++      chunk_keys, chunk_values, page_table, params, staging, group,
++      thread_index, simd_lane, simd_group);
++}
++
++kernel void prefill_attention_turbo_store_kv2_g8(
++    device const bfloat *chunk_keys [[buffer(0)]],
++    device const bfloat *chunk_values [[buffer(1)]],
++    device const SplashKvPage *page_table [[buffer(2)]],
++    constant SplashChunkedPrefillParams &params [[buffer(3)]],
++    uint group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]],
++    uint simd_lane [[thread_index_in_simdgroup]],
++    uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_chunk_phase<2, SplashTurboKv>(
++      chunk_keys, chunk_values, page_table, params, staging, group,
++      thread_index, simd_lane, simd_group);
++}
++
++// TurboQuant int4 entries stage the whole row (paged_store_row.h).
++
++kernel void
++prefill_attention_turbo_int4_store(device const bfloat *chunk_keys [[buffer(0)]],
++                              device const bfloat *chunk_values [[buffer(1)]],
++                              device const SplashKvPage *page_table [[buffer(2)]],
++                              constant SplashChunkedPrefillParams &params
++                              [[buffer(3)]],
++                              uint group [[threadgroup_position_in_grid]],
++                              uint thread_index [[thread_index_in_threadgroup]],
++                              uint simd_lane [[thread_index_in_simdgroup]],
++                              uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_chunk_phase<4, SplashTurboInt4Kv>(
++      chunk_keys, chunk_values, page_table, params, staging, group,
++      thread_index, simd_lane, simd_group);
++}
++
++kernel void prefill_attention_turbo_int4_store_kv2_g8(
++    device const bfloat *chunk_keys [[buffer(0)]],
++    device const bfloat *chunk_values [[buffer(1)]],
++    device const SplashKvPage *page_table [[buffer(2)]],
++    constant SplashChunkedPrefillParams &params [[buffer(3)]],
++    uint group [[threadgroup_position_in_grid]],
++    uint thread_index [[thread_index_in_threadgroup]],
++    uint simd_lane [[thread_index_in_simdgroup]],
++    uint simd_group [[simdgroup_index_in_threadgroup]]) {
++  threadgroup float staging[SplashKvHeadDimension];
++  splash_store_chunk_phase<2, SplashTurboInt4Kv>(
++      chunk_keys, chunk_values, page_table, params, staging, group,
++      thread_index, simd_lane, simd_group);
++}
+diff --git a/runtime/metal/kernels/shared/turbo_rotate.metal b/runtime/metal/kernels/shared/turbo_rotate.metal
+new file mode 100644
+index 0000000..f4774a9
+--- /dev/null
++++ b/runtime/metal/kernels/shared/turbo_rotate.metal
+@@ -0,0 +1,48 @@
++#include "metal/abi/PagedAttention.h"
++#include "metal/kernels/common/turbo_kv.h"
++
++// Rotates head vectors in place into the basis TurboQuant pages store keys
++// and values in (turbo_kv.h): the queries of a TurboQuant attention, before
++// its split. Each simdgroup rotates one 128-dimension group, so a 256-thread
++// threadgroup covers four head vectors.
++kernel void turbo_rotate_queries(device bfloat *vectors [[buffer(0)]],
++                                 constant SplashTurboRotateParams &params [[buffer(1)]],
++                                 uint group [[threadgroup_position_in_grid]],
++                                 uint simd_lane [[thread_index_in_simdgroup]],
++                                 uint simd_group [[simdgroup_index_in_threadgroup]],
++                                 uint simdgroups [[simdgroups_per_threadgroup]]) {
++  const ulong rotation_group = ulong(group) * simdgroups + simd_group;
++  if (rotation_group >= ulong(params.vectors) * SplashTurboGroups)
++    return;
++  device bfloat *x = vectors + rotation_group * SplashTurboGroup;
++  float v[4];
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    v[r] = float(x[32 * r + simd_lane]);
++  splash_turbo_rotate(v, simd_lane, false);
++#pragma unroll
++  for (uint r = 0; r < 4; ++r)
++    x[32 * r + simd_lane] = bfloat(v[r]);
++}
++
++// The 256-point rotation of TurboQuant int4 pages: one simdgroup per head
++// vector, eight per 256-thread threadgroup.
++kernel void turbo_rotate_queries_256(device bfloat *vectors [[buffer(0)]],
++                                     constant SplashTurboRotateParams &params [[buffer(1)]],
++                                     uint group [[threadgroup_position_in_grid]],
++                                     uint simd_lane [[thread_index_in_simdgroup]],
++                                     uint simd_group [[simdgroup_index_in_threadgroup]],
++                                     uint simdgroups [[simdgroups_per_threadgroup]]) {
++  const ulong vector = ulong(group) * simdgroups + simd_group;
++  if (vector >= params.vectors)
++    return;
++  device bfloat *x = vectors + vector * SPLASH_KV_HEAD_DIMENSION;
++  float v[8];
++#pragma unroll
++  for (uint r = 0; r < 8; ++r)
++    v[r] = float(x[32 * r + simd_lane]);
++  splash_turbo_rotate256(v, simd_lane, false);
++#pragma unroll
++  for (uint r = 0; r < 8; ++r)
++    x[32 * r + simd_lane] = bfloat(v[r]);
++}
+diff --git a/runtime/ops/PageStorage.mm b/runtime/ops/PageStorage.mm
+index 323d0e6..5d1ee26 100644
+--- a/runtime/ops/PageStorage.mm
++++ b/runtime/ops/PageStorage.mm
+@@ -34,10 +34,9 @@
+         throw std::invalid_argument(
+             "KV page pool is not a whole number of extents");
+     }
+-    const auto data = static_cast<uint32_t>(layout_.dataBytesPerLayerPage());
+-    const auto scale = static_cast<uint32_t>(layout_.scaleBytesPerLayerPage());
++    const SplashKvPageGeometry geometry = layout_.geometry();
+     for (uint32_t layer = 0; layer < layout_.attentionLayers; ++layer)
+-        layers_.push_back(splash_kv_layer(extentPages_, data, scale, layer));
++        layers_.push_back(splash_kv_geometry_layer(extentPages_, geometry, layer));
+     extents_.resize(pageCount_ / extentPages_);
+     extentAddresses_.resize(extents_.size());
+ }
+@@ -147,18 +146,17 @@
+         throw std::logic_error("KV page " + std::to_string(page) +
+                                " is in an extent that is not allocated");
+     }
+-    const auto data = static_cast<uint32_t>(layout_.dataBytesPerLayerPage());
+-    const auto scale = static_cast<uint32_t>(layout_.scaleBytesPerLayerPage());
++    const SplashKvPageGeometry geometry = layout_.geometry();
+     const uint32_t index = page % extentPages_;
+     std::vector<std::span<std::byte>> result;
+-    result.reserve(size_t{layout_.attentionLayers} * (scale ? 4 : 2));
++    result.reserve(size_t{layout_.attentionLayers} * (geometry.key_scales ? 4 : 2));
+     for (uint32_t layer = 0; layer < layout_.attentionLayers; ++layer) {
+         for (uint32_t tensor = SPLASH_KV_KEYS; tensor <= SPLASH_KV_VALUE_SCALES;
+              ++tensor) {
+-            if (const uint32_t bytes = splash_kv_page_bytes(data, scale, tensor)) {
+-                result.emplace_back(extent + splash_kv_offset(extentPages_, data,
+-                                                              scale, layer,
+-                                                              tensor, index),
++            if (const uint32_t bytes = splash_kv_tensor_bytes(geometry, tensor)) {
++                result.emplace_back(extent + splash_kv_geometry_offset(extentPages_,
++                                                                       geometry, layer,
++                                                                       tensor, index),
+                                     bytes);
+             }
+         }
+diff --git a/runtime/ops/PagedAttention.cpp b/runtime/ops/PagedAttention.cpp
+index b80de96..23c90b6 100644
+--- a/runtime/ops/PagedAttention.cpp
++++ b/runtime/ops/PagedAttention.cpp
+@@ -44,6 +44,62 @@ std::string_view pipeline(KernelLayout layout, std::string_view kv4Group6,
+   return layout == KernelLayout::Kv4Group6 ? kv4Group6 : kv2Group8;
+ }
+ 
++// A format-specific kernel's entries for the two GQA layouts, per format.
++struct FormatKernels final {
++  std::string_view q8[2], bf16[2], turbo[2], turboInt4[2];
++};
++
++std::string_view formatPipeline(KernelLayout layout, kv::Format format,
++                                const FormatKernels &names) noexcept {
++  const auto pick = [layout](const std::string_view (&entry)[2]) {
++    return pipeline(layout, entry[0], entry[1]);
++  };
++  switch (format) {
++  case kv::Format::BFloat16: return pick(names.bf16);
++  case kv::Format::Turbo: return pick(names.turbo);
++  case kv::Format::TurboInt4: return pick(names.turboInt4);
++  case kv::Format::Int8: break;
++  }
++  return pick(names.q8);
++}
++
++[[nodiscard]] constexpr bool turboFormat(kv::Format format) noexcept {
++  return format == kv::Format::Turbo || format == kv::Format::TurboInt4;
++}
++
++// The reduction of a split: TurboQuant formats rotate the output back.
++std::string_view reducePipeline(KernelLayout layout, kv::Format format, std::string_view stem) {
++  // stem is "prefill_attention_reduce" or "verify_attention_reduce"
++  static const std::string names[2][3][2] = {
++      {{"prefill_attention_reduce", "prefill_attention_reduce_kv2_g8"},
++       {"prefill_attention_reduce_turbo", "prefill_attention_reduce_turbo_kv2_g8"},
++       {"prefill_attention_reduce_turbo_int4", "prefill_attention_reduce_turbo_int4_kv2_g8"}},
++      {{"verify_attention_reduce", "verify_attention_reduce_kv2_g8"},
++       {"verify_attention_reduce_turbo", "verify_attention_reduce_turbo_kv2_g8"},
++       {"verify_attention_reduce_turbo_int4", "verify_attention_reduce_turbo_int4_kv2_g8"}}};
++  const auto &family = names[stem.starts_with("verify") ? 1 : 0];
++  const auto &entry = format == kv::Format::Turbo       ? family[1]
++                      : format == kv::Format::TurboInt4 ? family[2]
++                                                        : family[0];
++  return pipeline(layout, entry[0], entry[1]);
++}
++
++// TurboQuant attention reads queries rotated into its keys' basis: rotate
++// `vectors` head vectors of `queries` in place before the split reads them
++// (the encoder is serial). Turbo rotates each 128 dimensions with one
++// simdgroup, TurboInt4 each 256-dimension head vector.
++void addTurboQueryRotation(metal::CommandGraph &graph, metal::MetalBuffer queries,
++                           uint64_t vectors, uint32_t headDimension, kv::Format format) {
++  if (!vectors || vectors > std::numeric_limits<uint32_t>::max())
++    throw std::invalid_argument("invalid TurboQuant query rotation size");
++  const bool full = format == kv::Format::TurboInt4;
++  const uint64_t simdgroupTasks = full ? vectors : vectors * (headDimension / kv::kTurboGroup);
++  const uint64_t simdgroups = metal::CommandGraph::kDefaultThreads / 32;
++  graph.add(std::string(full ? "turbo_rotate_queries_256" : "turbo_rotate_queries"),
++            {std::move(queries)}, SplashTurboRotateParams{static_cast<uint32_t>(vectors)},
++            {(simdgroupTasks + simdgroups - 1) / simdgroups, 1, 1});
++}
++
+ // One dispatch normalizes both the queries and the keys, so their norms must
+ // share a stored type.
+ std::string qkNormKernel(std::string_view name, const NormWeights &queryNorm,
+@@ -88,13 +144,13 @@ PrefillAttentionPlan PagedAttention::prefillPlan(
+   return {rows, splits,
+           attentionWorkspace(uint64_t{tiles} * splits * layout.kvHeads * fusedRows,
+                              layout.headDimension),
+-          layout.format == kv::Format::BFloat16
+-              ? pipeline(kernel, "prefill_attention_bf16_split",
+-                         "prefill_attention_bf16_split_kv2_g8")
+-              : pipeline(kernel, "prefill_attention_q8_split",
+-                         "prefill_attention_q8_split_kv2_g8"),
+-          pipeline(kernel, "prefill_attention_reduce",
+-                   "prefill_attention_reduce_kv2_g8"),
++          formatPipeline(kernel, layout.format,
++                         {{"prefill_attention_q8_split", "prefill_attention_q8_split_kv2_g8"},
++                          {"prefill_attention_bf16_split", "prefill_attention_bf16_split_kv2_g8"},
++                          {"prefill_attention_turbo_split", "prefill_attention_turbo_split_kv2_g8"},
++                          {"prefill_attention_turbo_int4_split",
++                           "prefill_attention_turbo_int4_split_kv2_g8"}}),
++          reducePipeline(kernel, layout.format, "prefill_attention_reduce"),
+           {layout.kvHeads, tiles, splits}, {layout.kvHeads, fusedRows, tiles}, layout.format};
+ }
+ 
+@@ -118,21 +174,22 @@ VerifyAttentionPlan PagedAttention::verifyPlan(
+   }
+   return {lanes, laneSplits, splits,
+           verifyWorkspaceBound(lanes, queryHeads, layout),
+-          layout.format == kv::Format::BFloat16
+-              ? pipeline(kernel, "verify_attention_bf16_split",
+-                         "verify_attention_bf16_split_kv2_g8")
+-              : pipeline(kernel, "verify_attention_q8_split",
+-                         "verify_attention_q8_split_kv2_g8"),
+-          pipeline(kernel, "verify_attention_reduce",
+-                   "verify_attention_reduce_kv2_g8"),
++          formatPipeline(kernel, layout.format,
++                         {{"verify_attention_q8_split", "verify_attention_q8_split_kv2_g8"},
++                          {"verify_attention_bf16_split", "verify_attention_bf16_split_kv2_g8"},
++                          {"verify_attention_turbo_split", "verify_attention_turbo_split_kv2_g8"},
++                          {"verify_attention_turbo_int4_split",
++                           "verify_attention_turbo_int4_split_kv2_g8"}}),
++          reducePipeline(kernel, layout.format, "verify_attention_reduce"),
+           {layout.kvHeads, splits, lanes},
+           {layout.kvHeads,
+            kv::kVerifyRows * (queryHeads / layout.kvHeads), lanes},
+-          layout.format == kv::Format::BFloat16
+-              ? pipeline(kernel, "verify_attention_bf16_store",
+-                         "verify_attention_bf16_store_kv2_g8")
+-              : pipeline(kernel, "verify_attention_q8_store",
+-                         "verify_attention_q8_store_kv2_g8"),
++          formatPipeline(kernel, layout.format,
++                         {{"verify_attention_q8_store", "verify_attention_q8_store_kv2_g8"},
++                          {"verify_attention_bf16_store", "verify_attention_bf16_store_kv2_g8"},
++                          {"verify_attention_turbo_store", "verify_attention_turbo_store_kv2_g8"},
++                          {"verify_attention_turbo_int4_store",
++                           "verify_attention_turbo_int4_store_kv2_g8"}}),
+           {uint64_t{lanes} * 2 * kv::kVerifyRows * layout.kvHeads, 1, 1},
+           {layout.headDimension, 1, 1}, layout.format};
+ }
+@@ -266,9 +323,12 @@ void PagedAttention::addPrefillStore(
+     metal::MetalBuffer pageTable,
+     const kv::ChunkedPrefillParams &params, kv::Layout layout) {
+   const KernelLayout kernel = storageKernelLayout(layout);
+-  const auto store = layout.format == kv::Format::BFloat16
+-      ? pipeline(kernel, "prefill_attention_bf16_store", "prefill_attention_bf16_store_kv2_g8")
+-      : pipeline(kernel, "prefill_attention_q8_store", "prefill_attention_q8_store_kv2_g8");
++  const auto store = formatPipeline(
++      kernel, layout.format,
++      {{"prefill_attention_q8_store", "prefill_attention_q8_store_kv2_g8"},
++       {"prefill_attention_bf16_store", "prefill_attention_bf16_store_kv2_g8"},
++       {"prefill_attention_turbo_store", "prefill_attention_turbo_store_kv2_g8"},
++       {"prefill_attention_turbo_int4_store", "prefill_attention_turbo_int4_store_kv2_g8"}});
+   kv::ChunkedPrefillParams layerParams = params;
+   layerParams.kv = layer;
+   graph.add(std::string(store),
+@@ -296,6 +356,13 @@ void PagedAttention::addPrefill(
+   const kv::PrefillAttentionParams params{
+       chunk.committed_tokens, chunk.chunk_tokens, chunk.chunk_stride,
+       chunk.page_table_entries, layer, plan.splits};
++  if (turboFormat(plan.format)) {
++    // [KV head][row of chunk_stride][query head in group][dimension]
++    const uint64_t groupHeads = plan.reduceGroups.y / kv::kPrefillAttentionTileRows;
++    addTurboQueryRotation(graph, queries,
++                          uint64_t{plan.splitGroups.x} * chunk.chunk_stride * groupHeads,
++                          SPLASH_KV_HEAD_DIMENSION, plan.format);
++  }
+   graph.add(std::string(plan.splitPipeline),
+             {std::move(queries), partials, statistics, std::move(pageTable)},
+             params, plan.splitGroups);
+@@ -334,6 +401,14 @@ void PagedAttention::addVerify(metal::CommandGraph &graph, SplashKvLayer layer,
+             {buffers.chunkKeys, buffers.chunkValues, tables[0], tables[1], tables[2],
+              tables[3]},
+             stores, plan.storeGroups_, plan.storeThreads_);
++  if (turboFormat(plan.format)) {
++    // Every lane's [KV head][kVerifyChunkStride rows][query head][dimension].
++    const uint64_t groupHeads = uint64_t{plan.reduceGroups.y} / kv::kVerifyRows;
++    addTurboQueryRotation(graph, buffers.queries,
++                          uint64_t{plan.lanes} * plan.splitGroups.x *
++                              kv::kVerifyChunkStride * groupHeads,
++                          SPLASH_KV_HEAD_DIMENSION, plan.format);
++  }
+   graph.add(std::string(plan.splitPipeline),
+             {buffers.queries, buffers.partials, buffers.statistics, tables[0],
+              tables[1], tables[2], tables[3]},
+diff --git a/runtime/ops/PagedKv.hpp b/runtime/ops/PagedKv.hpp
+index 124cc3b..137d95e 100644
+--- a/runtime/ops/PagedKv.hpp
++++ b/runtime/ops/PagedKv.hpp
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "metal/abi/ExecutionGeometry.h"
++#include "metal/abi/KvExtent.h"
+ #include "metal/MetalBackend.hpp"
+ 
+ #include <algorithm>
+@@ -13,30 +14,57 @@ namespace splash::kv {
+ 
+ // Selected once for a runtime and its entire page pool. Weight storage is
+ // independent of the KV format; requests never change it while serving.
+-enum class Format : uint32_t { Int8 = 1, BFloat16 = 2 };
++// Turbo is TurboQuant (metal/kernels/common/turbo_kv.h): keys at 4 bits and
++// values at 3 bits per element on Lloyd-Max codebooks, rotated by a fixed
++// randomized Walsh-Hadamard transform per 128 dimensions, with one fp16 norm
++// per 128 dimensions. TurboInt4 rotates each head vector by a 256-point
++// randomized Hadamard transform and stores keys and values as symmetric int4
++// with an INT8-style fp32 scale per (token, head), which MPP reads natively.
++enum class Format : uint32_t { Int8 = 1, BFloat16 = 2, Turbo = 3, TurboInt4 = 4 };
+ 
+ [[nodiscard]] constexpr bool validFormat(Format format) noexcept {
+-  return format == Format::Int8 || format == Format::BFloat16;
++  return format == Format::Int8 || format == Format::BFloat16 ||
++         format == Format::Turbo || format == Format::TurboInt4;
+ }
+ 
+ [[nodiscard]] constexpr std::string_view formatName(Format format) noexcept {
+   switch (format) {
+   case Format::Int8: return "int8";
+   case Format::BFloat16: return "bf16";
++  case Format::Turbo: return "turbo";
++  case Format::TurboInt4: return "turbo-int4";
+   }
+   return "invalid";
+ }
+ 
++// The revision of a format's store math (quantizer, codebook, rotation). Bump it with every change
++// that alters stored pages, so a persistent cache never serves pages written by an older build.
++// Revision 1 leaves a format's cache namespace as before. turbo-int4 2: 16 codes, clipped
++// least-squares scale (splash/IMPROVEMENT_PLAN.md step 2).
++[[nodiscard]] constexpr uint32_t quantizerRevision(Format format) noexcept {
++  return format == Format::TurboInt4 ? 2 : 1;
++}
++
+ [[nodiscard]] constexpr std::string_view storageFormatName(Format format) noexcept {
+   switch (format) {
+   case Format::Int8:
+     return "q8s8_f32_scale_per_token_head_k_token_major_v_dimension_major";
+   case Format::BFloat16:
+     return "bf16_k_token_major_v_dimension_major";
++  case Format::Turbo:
++    return "turboquant_k4_v3_wht128_fp16_norm_bitplane_token_major";
++  case Format::TurboInt4:
++    return "turboquant_wht256_int4_f32_scale_per_token_head_token_major";
+   }
+   return "invalid";
+ }
+ 
++// TurboQuant geometry: 128 dimensions share one rotation and one norm; 4-bit
++// keys and 3-bit values are bit-planes of 32 dimensions in one uint each.
++inline constexpr uint32_t kTurboGroup = 128;
++inline constexpr uint32_t kTurboKeyBits = 4;
++inline constexpr uint32_t kTurboValueBits = 3;
++
+ // A page whose content goes to another page.
+ struct PageCopy final {
+   uint32_t from = 0;
+@@ -112,7 +140,8 @@ namespace detail {
+ 
+ } // namespace detail
+ 
+-// Physical KV geometry: Page32, either BF16 or per-(token, head) symmetric INT8.
++// Physical KV geometry: Page32, either BF16, per-(token, head) symmetric INT8,
++// or TurboQuant (4-bit keys, 3-bit values, fp16 norms per 128 dimensions).
+ // Layer and head counts vary by target.
+ struct Layout final {
+   uint32_t attentionLayers = 0;
+@@ -121,26 +150,63 @@ struct Layout final {
+   Format format = Format::Int8;
+ 
+   [[nodiscard]] constexpr bool valid() const noexcept {
+-    return attentionLayers && kvHeads && headDimension && validFormat(format);
++    return attentionLayers && kvHeads && headDimension && validFormat(format) &&
++           (format != Format::Turbo || headDimension % kTurboGroup == 0) &&
++           (format != Format::TurboInt4 || headDimension == 256);
+   }
+   [[nodiscard]] constexpr uint32_t elementsPerScale() const noexcept {
+-    return format == Format::Int8 ? headDimension : 0;
++    return format == Format::Int8 || format == Format::TurboInt4 ? headDimension
++           : format == Format::Turbo                             ? kTurboGroup
++                                                                 : 0;
+   }
+   [[nodiscard]] constexpr uint64_t elementsPerLayerPage() const noexcept {
+     return uint64_t{kPageTokens} * kvHeads * headDimension;
+   }
+   [[nodiscard]] constexpr uint64_t scalesPerTensorLayerPage() const noexcept {
+-    return format == Format::Int8 ? uint64_t{kPageTokens} * kvHeads : 0;
++    return format == Format::Int8 || format == Format::TurboInt4
++               ? uint64_t{kPageTokens} * kvHeads
++               : 0;
+   }
+-  // Keys and values share one data and one scale geometry per layer page.
++  // INT8 and BF16 keys and values share one data and one scale geometry
++  // per layer page; TurboQuant keys take more bits than its values.
+   [[nodiscard]] constexpr uint64_t dataBytesPerLayerPage() const noexcept {
+-    return elementsPerLayerPage() * (format == Format::Int8 ? 1 : 2);
++    return keyDataBytesPerLayerPage();
+   }
+   [[nodiscard]] constexpr uint64_t scaleBytesPerLayerPage() const noexcept {
++    return keyScaleBytesPerLayerPage();
++  }
++  [[nodiscard]] constexpr uint64_t keyDataBytesPerLayerPage() const noexcept {
++    if (format == Format::Turbo)
++      return elementsPerLayerPage() * kTurboKeyBits / 8;
++    if (format == Format::TurboInt4)
++      return elementsPerLayerPage() / 2;
++    return elementsPerLayerPage() * (format == Format::Int8 ? 1 : 2);
++  }
++  [[nodiscard]] constexpr uint64_t valueDataBytesPerLayerPage() const noexcept {
++    if (format == Format::Turbo)
++      return elementsPerLayerPage() * kTurboValueBits / 8;
++    return keyDataBytesPerLayerPage();
++  }
++  // INT8: one fp32 scale per (token, head); TurboQuant: one fp16 norm per
++  // (token, head, 128 dimensions); keys and values alike.
++  [[nodiscard]] constexpr uint64_t keyScaleBytesPerLayerPage() const noexcept {
++    if (format == Format::Turbo)
++      return uint64_t{kPageTokens} * kvHeads * (headDimension / kTurboGroup) * 2;
+     return scalesPerTensorLayerPage() * sizeof(float);
+   }
++  [[nodiscard]] constexpr uint64_t valueScaleBytesPerLayerPage() const noexcept {
++    return keyScaleBytesPerLayerPage();
++  }
++  // The four tensors' bytes in one layer page, as the kernels place them.
++  [[nodiscard]] constexpr SplashKvPageGeometry geometry() const noexcept {
++    return {static_cast<uint32_t>(keyDataBytesPerLayerPage()),
++            static_cast<uint32_t>(keyScaleBytesPerLayerPage()),
++            static_cast<uint32_t>(valueDataBytesPerLayerPage()),
++            static_cast<uint32_t>(valueScaleBytesPerLayerPage())};
++  }
+   [[nodiscard]] constexpr uint64_t bytesPerLayerPage() const noexcept {
+-    return 2 * (dataBytesPerLayerPage() + scaleBytesPerLayerPage());
++    return keyDataBytesPerLayerPage() + keyScaleBytesPerLayerPage() +
++           valueDataBytesPerLayerPage() + valueScaleBytesPerLayerPage();
+   }
+   [[nodiscard]] constexpr uint64_t bytesPerModelPage() const noexcept {
+     return uint64_t{attentionLayers} * bytesPerLayerPage();
+@@ -155,6 +221,11 @@ struct Layout final {
+     if (format == Format::BFloat16)
+       return static_cast<uint32_t>(
+           detail::pagesForAlignedRegion(dataBytesPerLayerPage()));
++    if (format == Format::Turbo)
++      return static_cast<uint32_t>(detail::lcm(
++          detail::lcm(detail::pagesForAlignedRegion(keyDataBytesPerLayerPage()),
++                      detail::pagesForAlignedRegion(valueDataBytesPerLayerPage())),
++          detail::pagesForAlignedRegion(keyScaleBytesPerLayerPage())));
+     return static_cast<uint32_t>(detail::lcm(
+         detail::pagesForAlignedRegion(dataBytesPerLayerPage()),
+         detail::pagesForAlignedRegion(scaleBytesPerLayerPage())));
+diff --git a/server/serve_options.py b/server/serve_options.py
+index 1afc09a..47081b8 100644
+--- a/server/serve_options.py
++++ b/server/serve_options.py
+@@ -282,9 +282,12 @@ SERVE_OPTIONS = (
+     ServeOption(
+         "--kv-format",
+         dict(
+-            choices=("int8", "bf16"),
++            choices=("int8", "bf16", "turbo", "turbo-int4"),
+             default="int8",
+-            help="target KV cache storage (default: int8); bf16 uses more memory",
++            help="target KV cache storage (default: int8); bf16 uses more memory; "
++            "TurboQuant: turbo (4-bit keys, 3-bit values, Lloyd-Max) about 2.2x less "
++            "than int8, turbo-int4 (rotated int4 the GPU reads natively) about 2x less "
++            "and faster than int8",
+         ),
+     ),
+     ServeOption(

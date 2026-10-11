@@ -1,0 +1,43 @@
+# dsh patch layer for BACKEND=splash, applied after qwen.cordis.patch.yml (scripts/dsh-env.sh adds it).
+# It points the provider at Splash and turns the JEV plugin off.
+# A `config` key replaces a row's whole config, so the provider row is restated in full.
+
+# 1. Same provider id and model id, pointed at Splash (scripts/serve-splash.sh serves the alias).
+- id: llm-pi-ai
+  config:
+    providers:
+      llama-local:
+        displayName: Splash Qwen3.8-27B UD-IQ3_XXS + DFlash2 (local)
+        api: openai-completions
+        baseURL: http://127.0.0.1:8000/v1
+        apiKeyEnv: LLAMA_API_KEY            # placeholder; Splash has no auth on localhost by default
+        reasoning: high
+        timeoutMs: 900000
+        streamIdleTimeoutMs: 900000
+        retryPolicy:
+          mode: normal
+          maxRetries: 1
+        compat:
+          supportsDeveloperRole: false
+          supportsStore: false
+          maxTokensField: max_tokens
+          # Splash ignores chat_template_kwargs; it takes OpenAI reasoning_effort and maps high to the
+          # template's xhigh, which is also what the template uses when llama-server sends no effort
+          thinkingFormat: openai
+          supportsReasoningEffort: true
+        models:
+          - id: qwen3.8-27b-local
+            name: Qwen3.8 27B UD-IQ3_XXS (Splash)
+            # Fallback only: scripts/dsh-env.sh writes the running server's limit minus the reply
+            # budget into a generated copy (int8 ~94K, turbo-int4 ~192K, turbo ~213K on 24 GB).
+            contextWindow: 65536
+            maxTokens: 16384
+            reasoningEfforts:
+              off: none                      # reasoning_effort "none" turns thinking off on Splash
+              high: high
+
+# 2. JEV is off on Splash (by choice, 2026-09-29). The dsh sandbox still confines writes to the working
+#    directory and /tmp, but nothing blocks destructive commands inside it or in /tmp. To turn JEV back
+#    on over /v1/systemone, see README section 31.5 (api: systemone, thresholds SYSTEMONE_SAFETY).
+- id: jev
+  disabled: true

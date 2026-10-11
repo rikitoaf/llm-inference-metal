@@ -1,0 +1,12 @@
+{
+  "name": "dsh-qwen-jev-harness",
+  "private": true,
+  "type": "module",
+  "description": "DeepSeek Harness pinned for the local Qwen3.8 + JEV stack",
+  "scripts": {
+    "dsh": "dsh"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.1.5-rc.3"
+  }
+}
