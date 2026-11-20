@@ -1,0 +1,1012 @@
+prune_splash_cache: 15.0 GiB kept of a 48 GiB budget
+warning: only ~12 GiB reclaimable; Splash needs ~16 GiB to start. Close memory-heavy apps (IDEs, Teams) if it waits or fails.
+=== 2026-11-02 09:37:07 start: kv turbo-int4, tree 1, temperature 0.6, draft scale 0.35, draft head rows 98304, extra ''
++ /Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src/splash serve --model unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS --served-model-name qwen3.8-27b-local --language-only --host 127.0.0.1 --port 8000 --no-webui --kv-format turbo-int4 --max-cache-disk 24G --persistent-cache --default-temperature 0.6
+Splash model unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS is already installed in /Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src/install/models/.selections/fb0aa6e23bdecc7d24023adea3bcae72062d1c103ab1578902b00a2ebb3f500f
+09:37:24 Loading · unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS
+09:37:24 Chat template · patched to render later system messages in place (the original template rejects them), generation prompt 5-7 tokens
+09:37:29 Weights loaded in 4.67 s.
+09:37:29 Kernel policy for GPU family 10 with 16 cores.
+09:37:29 Persistent cache tier: 24576 MiB for KV pages of 528 KiB and states of 187 MiB; a state's write stages through 187 MiB of the memory plan.
+09:37:29 Persistent cache /Users/abdul.rakib/Library/Caches/Splash/prefix-cache/25106ff8f91c38da823fa761fa483281: took back 58 restore points over 8737 KV blocks (15351 MiB); left 0 copies behind.
+Waiting for sufficient available memory to start; the macOS reserve remains protected...
+09:37:34 Weights loaded in 3.90 s.
+09:37:34 Kernel policy for GPU family 10 with 16 cores.
+09:37:34 Persistent cache tier: 24576 MiB for KV pages of 528 KiB and states of 187 MiB; a state's write stages through 187 MiB of the memory plan.
+09:37:34 Persistent cache /Users/abdul.rakib/Library/Caches/Splash/prefix-cache/25106ff8f91c38da823fa761fa483281: took back 58 restore points over 8737 KV blocks (15351 MiB); left 0 copies behind.
+09:37:39 Weights loaded in 3.93 s.
+09:37:39 Kernel policy for GPU family 10 with 16 cores.
+09:37:39 Persistent cache tier: 24576 MiB for KV pages of 528 KiB and states of 187 MiB; a state's write stages through 187 MiB of the memory plan.
+09:37:39 Persistent cache /Users/abdul.rakib/Library/Caches/Splash/prefix-cache/25106ff8f91c38da823fa761fa483281: took back 58 restore points over 8737 KV blocks (15351 MiB); left 0 copies behind.
+Splash: SPLASH_DRAFT_HEAD_ROWS: the draft head scores tokens [0, 98304) and [247808, 248320), 98816 of 248320 rows
+Memory: growth paused; waiting=0; suspended=0
+09:37:45 Ready · unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS · context 204,785 · language only · http://127.0.0.1:8000
+09:38:39 Done · input 8,363 · cached 0 · output 83 · tools 12·4f7e2e49 · TTFT 19.4s · 79.0 tok/s
+09:38:42 Done · input 8,600 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.9s · 77.4 tok/s
+09:38:58 Done · input 9,309 · cached 8,576 · output 967 · tools 12·4f7e2e49 · TTFT 2.0s · 70.0 tok/s
+09:39:02 Done · input 10,342 · cached 9,280 · output 123 · tools 12·4f7e2e49 · TTFT 2.8s · 64.1 tok/s
+09:39:11 Done · input 10,501 · cached 10,336 · output 535 · tools 12·4f7e2e49 · TTFT 0.8s · 68.8 tok/s
+09:39:18 Done · input 11,056 · cached 10,496 · output 291 · tools 12·4f7e2e49 · TTFT 1.6s · 54.5 tok/s
+09:39:41 Done · input 8,368 · cached 0 · output 85 · tools 12·4f7e2e49 · TTFT 19.9s · 74.3 tok/s
+09:39:43 Done · input 8,610 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 1.0s · 78.9 tok/s
+09:44:57 Done · input 9,792 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.2s · 52.8 tok/s
+09:45:06 Done · input 8,370 · cached 8,160 · output 95 · tools 12·4f7e2e49 · TTFT 0.9s · 68.7 tok/s
+09:45:10 Done · input 8,596 · cached 8,352 · output 223 · tools 12·4f7e2e49 · TTFT 0.9s · 78.7 tok/s
+09:48:01 Done · input 10,008 · cached 8,576 · output 9,175 · tools 12·4f7e2e49 · TTFT 3.6s · 54.6 tok/s
+09:48:27 Done · input 19,307 · cached 9,984 · output 120 · tools 12·4f7e2e49 · TTFT 23.7s · 61.2 tok/s
+09:48:47 Done · input 19,463 · cached 19,296 · output 1,235 · tools 12·4f7e2e49 · TTFT 0.9s · 66.9 tok/s
+09:49:13 Done · input 20,805 · cached 19,456 · output 1,669 · tools 12·4f7e2e49 · TTFT 3.9s · 73.5 tok/s
+09:49:21 Done · input 22,496 · cached 20,800 · output 142 · tools 12·4f7e2e49 · TTFT 4.7s · 50.2 tok/s
+09:49:28 Done · input 22,674 · cached 22,464 · output 379 · tools 12·4f7e2e49 · TTFT 0.9s · 62.1 tok/s
+09:49:32 Done · input 8,367 · cached 8,160 · output 89 · tools 12·4f7e2e49 · TTFT 0.8s · 70.3 tok/s
+09:49:35 Done · input 8,611 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 77.3 tok/s
+09:54:39 Done · input 9,410 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.3s · 54.3 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:54:42 Done · input 8,368 · cached 8,160 · output 84 · tools 12·4f7e2e49 · TTFT 0.8s · 78.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:54:45 Done · input 8,611 · cached 8,352 · output 117 · tools 12·4f7e2e49 · TTFT 1.0s · 79.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:58:02 Done · input 9,715 · cached 8,576 · output 9,754 · tools 12·4f7e2e49 · TTFT 2.9s · 50.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:58:46 Done · input 19,506 · cached 9,696 · output 1,139 · tools 12·4f7e2e49 · TTFT 25.0s · 62.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:58:52 Done · input 20,713 · cached 19,488 · output 139 · tools 12·4f7e2e49 · TTFT 3.5s · 56.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:59:17 Done · input 20,889 · cached 20,704 · output 1,470 · tools 12·4f7e2e49 · TTFT 0.8s · 62.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+09:59:39 Done · input 22,666 · cached 20,864 · output 930 · tools 12·4f7e2e49 · TTFT 5.0s · 54.6 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:59:45 Done · input 23,653 · cached 22,656 · output 121 · tools 12·4f7e2e49 · TTFT 3.0s · 41.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+09:59:55 Done · input 23,811 · cached 23,648 · output 420 · tools 12·4f7e2e49 · TTFT 0.7s · 45.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:00:04 Done · input 8,367 · cached 8,160 · output 83 · tools 12·4f7e2e49 · TTFT 0.9s · 72.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:00:06 Done · input 8,609 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 1.0s · 79.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:05:34 Done · input 9,376 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.1s · 50.3 tok/s
+Memory: growth available; resource wait cleared
+10:05:37 Done · input 8,363 · cached 8,352 · output 58 · tools 12·4f7e2e49 · TTFT 0.2s · 73.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:05:39 Done · input 8,575 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.8s · 77.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:02 Done · input 9,284 · cached 8,544 · output 1,414 · tools 12·4f7e2e49 · TTFT 2.1s · 68.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:08 Done · input 10,748 · cached 9,248 · output 113 · tools 12·4f7e2e49 · TTFT 3.9s · 53.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:18 Done · input 10,897 · cached 10,720 · output 554 · tools 12·4f7e2e49 · TTFT 0.8s · 60.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:34 Done · input 11,504 · cached 10,880 · output 1,076 · tools 12·4f7e2e49 · TTFT 1.8s · 77.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:38 Done · input 12,599 · cached 11,488 · output 80 · tools 12·4f7e2e49 · TTFT 3.0s · 72.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:45 Done · input 12,949 · cached 12,576 · output 338 · tools 12·4f7e2e49 · TTFT 1.2s · 54.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:49 Done · input 8,368 · cached 8,352 · output 83 · tools 12·4f7e2e49 · TTFT 0.3s · 77.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:06:51 Done · input 8,608 · cached 8,352 · output 116 · tools 12·4f7e2e49 · TTFT 0.9s · 80.2 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:11:28 Done · input 9,793 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.3s · 59.9 tok/s
+Memory: growth available; resource wait cleared
+10:11:36 Done · input 8,370 · cached 8,352 · output 84 · tools 12·4f7e2e49 · TTFT 0.3s · 73.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:11:40 Done · input 8,630 · cached 8,352 · output 219 · tools 12·4f7e2e49 · TTFT 0.9s · 84.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:15:08 Done · input 10,038 · cached 8,608 · output 11,789 · tools 12·4f7e2e49 · TTFT 3.6s · 57.6 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:16:02 Done · input 21,867 · cached 10,016 · output 1,492 · tools 12·4f7e2e49 · TTFT 30.4s · 65.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:16:25 Done · input 23,483 · cached 21,856 · output 1,050 · tools 12·4f7e2e49 · TTFT 4.8s · 57.1 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:16:46 Done · input 24,657 · cached 23,456 · output 972 · tools 12·4f7e2e49 · TTFT 3.9s · 56.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:16:58 Done · input 25,675 · cached 24,640 · output 433 · tools 12·4f7e2e49 · TTFT 3.1s · 51.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:17:01 Done · input 8,367 · cached 8,352 · output 85 · tools 12·4f7e2e49 · TTFT 0.3s · 67.2 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:17:04 Done · input 8,607 · cached 8,352 · output 116 · tools 12·4f7e2e49 · TTFT 0.9s · 78.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:23:22 Done · input 9,409 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.4s · 43.5 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:23:26 Done · input 8,368 · cached 8,352 · output 58 · tools 12·4f7e2e49 · TTFT 0.2s · 71.7 tok/s
+10:23:28 Done · input 8,585 · cached 8,352 · output 116 · tools 12·4f7e2e49 · TTFT 0.8s · 76.0 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:26:43 Done · input 9,688 · cached 8,576 · output 8,578 · tools 12·4f7e2e49 · TTFT 3.7s · 44.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:27:26 Done · input 18,298 · cached 9,664 · output 1,112 · tools 12·4f7e2e49 · TTFT 24.1s · 58.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:27:32 Done · input 19,478 · cached 18,272 · output 97 · tools 12·4f7e2e49 · TTFT 3.8s · 60.1 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:27:55 Done · input 19,611 · cached 19,456 · output 1,299 · tools 12·4f7e2e49 · TTFT 0.7s · 56.6 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:28:16 Done · input 20,994 · cached 19,584 · output 985 · tools 12·4f7e2e49 · TTFT 4.4s · 60.0 tok/s
+10:28:21 Done · input 22,024 · cached 20,960 · output 85 · tools 12·4f7e2e49 · TTFT 3.5s · 63.5 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:28:33 Done · input 22,145 · cached 22,016 · output 437 · tools 12·4f7e2e49 · TTFT 0.7s · 39.7 tok/s
+10:28:37 Done · input 8,367 · cached 8,352 · output 86 · tools 12·4f7e2e49 · TTFT 0.3s · 75.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:28:39 Done · input 8,612 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 1.0s · 77.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:34:24 Done · input 9,379 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.4s · 47.8 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:34:27 Done · input 8,363 · cached 8,352 · output 59 · tools 12·4f7e2e49 · TTFT 0.2s · 68.2 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:34:29 Done · input 8,576 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.8s · 75.9 tok/s
+Memory: growth available; resource wait cleared
+10:34:45 Done · input 9,285 · cached 8,544 · output 918 · tools 12·4f7e2e49 · TTFT 2.1s · 65.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:01 Done · input 10,434 · cached 9,280 · output 689 · tools 12·4f7e2e49 · TTFT 3.2s · 58.2 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:04 Done · input 11,213 · cached 10,400 · output 97 · tools 12·4f7e2e49 · TTFT 2.4s · 70.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:13 Done · input 11,342 · cached 11,200 · output 526 · tools 12·4f7e2e49 · TTFT 0.6s · 66.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:30 Done · input 11,921 · cached 11,328 · output 1,075 · tools 12·4f7e2e49 · TTFT 1.8s · 70.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:41 Done · input 13,036 · cached 11,904 · output 585 · tools 12·4f7e2e49 · TTFT 3.1s · 73.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:45 Done · input 13,641 · cached 13,024 · output 92 · tools 12·4f7e2e49 · TTFT 1.9s · 62.3 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:52 Done · input 13,765 · cached 13,632 · output 335 · tools 12·4f7e2e49 · TTFT 0.6s · 53.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:35:55 Done · input 8,368 · cached 8,352 · output 84 · tools 12·4f7e2e49 · TTFT 0.2s · 72.5 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:35:58 Done · input 8,609 · cached 8,352 · output 116 · tools 12·4f7e2e49 · TTFT 1.0s · 79.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:40:51 Done · input 9,794 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.3s · 56.5 tok/s
+Memory: growth available; resource wait cleared
+10:40:54 Done · input 8,370 · cached 8,352 · output 99 · tools 12·4f7e2e49 · TTFT 0.3s · 82.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:40:58 Done · input 8,600 · cached 8,352 · output 219 · tools 12·4f7e2e49 · TTFT 0.9s · 83.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:42:58 Done · input 10,008 · cached 8,576 · output 6,176 · tools 12·4f7e2e49 · TTFT 3.7s · 53.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:43:37 Done · input 16,564 · cached 9,984 · output 1,468 · tools 12·4f7e2e49 · TTFT 16.9s · 65.2 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:43:44 Done · input 18,156 · cached 16,544 · output 125 · tools 12·4f7e2e49 · TTFT 4.5s · 53.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:44:04 Done · input 18,317 · cached 18,144 · output 1,193 · tools 12·4f7e2e49 · TTFT 0.8s · 61.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:44:49 Done · input 19,615 · cached 18,304 · output 2,810 · tools 12·4f7e2e49 · TTFT 3.7s · 68.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:45:12 Done · input 22,535 · cached 19,584 · output 1,006 · tools 12·4f7e2e49 · TTFT 8.2s · 69.4 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:45:25 Done · input 23,585 · cached 22,528 · output 497 · tools 12·4f7e2e49 · TTFT 3.2s · 53.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+10:45:28 Done · input 8,367 · cached 8,352 · output 85 · tools 12·4f7e2e49 · TTFT 0.2s · 73.5 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+10:45:31 Done · input 8,607 · cached 8,352 · output 117 · tools 12·4f7e2e49 · TTFT 0.9s · 80.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+10:51:02 Done · input 9,410 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.3s · 49.7 tok/s
+10:51:06 Done · input 8,368 · cached 8,352 · output 90 · tools 12·4f7e2e49 · TTFT 0.2s · 71.9 tok/s
+10:51:08 Done · input 8,617 · cached 8,352 · output 118 · tools 12·4f7e2e49 · TTFT 0.9s · 82.2 tok/s
+10:54:48 Done · input 9,722 · cached 8,608 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.9s · 75.4 tok/s
+10:54:52 Done · input 8,367 · cached 8,352 · output 86 · tools 12·4f7e2e49 · TTFT 0.2s · 73.6 tok/s
+10:54:54 Done · input 8,612 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 76.6 tok/s
+11:00:40 Done · input 9,379 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.2s · 47.7 tok/s
+11:01:14 Done · input 8,363 · cached 8,352 · output 84 · tools 12·4f7e2e49 · TTFT 0.3s · 69.2 tok/s
+11:01:16 Done · input 8,601 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.9s · 73.6 tok/s
+11:02:47 Done · input 9,310 · cached 8,576 · output 5,146 · tools 12·4f7e2e49 · TTFT 2.0s · 57.9 tok/s
+11:03:34 Done · input 14,687 · cached 9,280 · output 1,820 · tools 12·4f7e2e49 · TTFT 14.5s · 56.5 tok/s
+11:03:57 Done · input 16,597 · cached 14,656 · output 949 · tools 12·4f7e2e49 · TTFT 6.0s · 56.7 tok/s
+11:04:02 Done · input 17,588 · cached 16,576 · output 98 · tools 12·4f7e2e49 · TTFT 3.1s · 53.7 tok/s
+11:04:14 Done · input 18,078 · cached 17,568 · output 560 · tools 12·4f7e2e49 · TTFT 1.7s · 51.9 tok/s
+11:04:18 Done · input 8,368 · cached 8,352 · output 83 · tools 12·4f7e2e49 · TTFT 0.3s · 76.1 tok/s
+11:04:20 Done · input 8,608 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 76.6 tok/s
+11:09:39 Done · input 9,790 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.3s · 51.9 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:15:04 Done · input 9,845 · cached 9,760 · output 16,384 · tools 12·4f7e2e49 · TTFT 0.4s · 50.4 tok/s
+11:19:15 Cancelled · input 9,900 · cached 9,824 · output 11,887 · tools 12·4f7e2e49 · TTFT 0.4s · 47.5 tok/s
+11:19:24 Done · input 8,370 · cached 8,352 · output 94 · tools 12·4f7e2e49 · TTFT 0.3s · 79.3 tok/s
+11:19:27 Done · input 8,595 · cached 8,352 · output 219 · tools 12·4f7e2e49 · TTFT 0.9s · 81.6 tok/s
+11:20:00 Cancelled · input 10,003 · cached 8,576 · output 1,198 · tools 12·4f7e2e49 · TTFT 3.8s · 40.9 tok/s
+11:20:48 Done · input 8,368 · cached 8,352 · output 98 · tools 12·4f7e2e49 · TTFT 0.3s · 68.4 tok/s
+11:20:51 Done · input 8,538 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 68.2 tok/s
+11:26:04 Done · input 9,720 · cached 8,512 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.5s · 53.0 tok/s
+11:26:56 Done · input 9,746 · cached 0 · output 1,879 · tools 12·4f7e2e49 · TTFT 24.4s · 66.9 tok/s
+11:27:47 Done · input 8,363 · cached 8,352 · output 62 · tools 12·4f7e2e49 · TTFT 0.3s · 65.1 tok/s
+11:27:50 Done · input 8,579 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.9s · 77.2 tok/s
+11:28:06 Done · input 9,288 · cached 8,544 · output 1,007 · tools 12·4f7e2e49 · TTFT 2.1s · 68.6 tok/s
+11:28:11 Done · input 10,345 · cached 9,280 · output 118 · tools 12·4f7e2e49 · TTFT 2.9s · 82.3 tok/s
+11:28:13 Done · input 10,513 · cached 10,336 · output 92 · tools 12·4f7e2e49 · TTFT 0.8s · 78.9 tok/s
+11:28:20 Done · input 10,641 · cached 10,496 · output 453 · tools 12·4f7e2e49 · TTFT 0.6s · 69.0 tok/s
+11:28:30 Done · input 11,114 · cached 10,624 · output 500 · tools 12·4f7e2e49 · TTFT 1.5s · 59.1 tok/s
+11:28:33 Done · input 8,368 · cached 8,352 · output 86 · tools 12·4f7e2e49 · TTFT 0.3s · 79.7 tok/s
+11:28:36 Done · input 8,611 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 1.0s · 75.8 tok/s
+11:33:33 Done · input 9,793 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.3s · 55.7 tok/s
+11:34:28 Done · input 9,819 · cached 0 · output 2,091 · tools 12·4f7e2e49 · TTFT 24.1s · 67.9 tok/s
+11:34:32 Done · input 8,370 · cached 8,352 · output 108 · tools 12·4f7e2e49 · TTFT 0.3s · 75.7 tok/s
+11:34:36 Done · input 8,749 · cached 8,352 · output 219 · tools 12·4f7e2e49 · TTFT 1.2s · 83.2 tok/s
+11:37:20 Done · input 10,157 · cached 8,736 · output 8,127 · tools 12·4f7e2e49 · TTFT 3.8s · 50.8 tok/s
+11:37:44 Done · input 18,408 · cached 10,144 · output 122 · tools 12·4f7e2e49 · TTFT 21.8s · 54.1 tok/s
+11:38:03 Done · input 18,566 · cached 18,400 · output 1,127 · tools 12·4f7e2e49 · TTFT 0.8s · 61.8 tok/s
+11:38:11 Done · input 19,754 · cached 18,560 · output 206 · tools 12·4f7e2e49 · TTFT 3.5s · 51.9 tok/s
+11:38:21 Done · input 19,996 · cached 19,744 · output 442 · tools 12·4f7e2e49 · TTFT 0.9s · 48.2 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:38:24 Done · input 8,367 · cached 8,352 · output 84 · tools 12·4f7e2e49 · TTFT 0.2s · 73.3 tok/s
+11:38:27 Done · input 8,606 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 79.2 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:44:10 Done · input 9,405 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.2s · 48.0 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:44:41 Done · input 9,431 · cached 0 · output 535 · tools 12·4f7e2e49 · TTFT 22.9s · 68.1 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+11:44:49 Done · input 8,368 · cached 8,352 · output 96 · tools 12·4f7e2e49 · TTFT 0.3s · 67.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+11:44:52 Done · input 8,623 · cached 8,352 · output 116 · tools 12·4f7e2e49 · TTFT 0.9s · 81.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:48:55 Done · input 9,726 · cached 8,608 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.9s · 68.1 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:49:11 Done · input 9,752 · cached 8,128 · output 837 · tools 12·4f7e2e49 · TTFT 4.4s · 73.9 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:49:15 Done · input 8,367 · cached 8,352 · output 85 · tools 12·4f7e2e49 · TTFT 0.3s · 71.6 tok/s
+11:49:17 Done · input 8,611 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 77.3 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:55:35 Done · input 9,378 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.2s · 43.6 tok/s
+Memory: growth available; resource wait cleared
+11:55:52 Done · input 9,404 · cached 8,128 · output 867 · tools 12·4f7e2e49 · TTFT 3.7s · 66.3 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+11:55:55 Done · input 8,363 · cached 8,352 · output 85 · tools 12·4f7e2e49 · TTFT 0.2s · 68.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+11:55:58 Done · input 8,602 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.9s · 76.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+11:56:43 Done · input 9,311 · cached 8,576 · output 2,298 · tools 12·4f7e2e49 · TTFT 2.1s · 53.2 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:57:01 Done · input 11,699 · cached 9,280 · output 632 · tools 12·4f7e2e49 · TTFT 7.0s · 57.3 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+11:57:22 Done · input 12,402 · cached 11,680 · output 1,306 · tools 12·4f7e2e49 · TTFT 2.2s · 69.6 tok/s
+11:57:28 Done · input 13,727 · cached 12,384 · output 106 · tools 12·4f7e2e49 · TTFT 3.9s · 50.4 tok/s
+Memory: growth available; resource wait cleared
+11:57:39 Done · input 14,208 · cached 13,696 · output 487 · tools 12·4f7e2e49 · TTFT 1.7s · 51.6 tok/s
+Memory: growth paused; waiting=0; suspended=0
+11:57:43 Done · input 8,368 · cached 8,352 · output 83 · tools 12·4f7e2e49 · TTFT 0.3s · 77.5 tok/s
+11:57:45 Done · input 8,608 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 77.9 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:03:12 Done · input 9,790 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 3.2s · 50.5 tok/s
+12:03:44 Done · input 9,816 · cached 8,320 · output 1,916 · tools 12·4f7e2e49 · TTFT 4.2s · 69.2 tok/s
+Memory: growth available; resource wait cleared
+12:03:48 Done · input 8,370 · cached 8,352 · output 96 · tools 12·4f7e2e49 · TTFT 0.3s · 78.6 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:03:52 Done · input 8,597 · cached 8,352 · output 221 · tools 12·4f7e2e49 · TTFT 0.9s · 77.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:06:16 Done · input 10,007 · cached 8,576 · output 7,272 · tools 12·4f7e2e49 · TTFT 3.9s · 51.7 tok/s
+12:06:39 Done · input 17,403 · cached 9,984 · output 130 · tools 12·4f7e2e49 · TTFT 19.8s · 50.4 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:07:00 Done · input 17,569 · cached 17,376 · output 1,252 · tools 12·4f7e2e49 · TTFT 0.9s · 61.1 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:07:09 Done · input 18,883 · cached 17,536 · output 259 · tools 12·4f7e2e49 · TTFT 3.9s · 53.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:07:20 Done · input 19,178 · cached 18,848 · output 478 · tools 12·4f7e2e49 · TTFT 1.1s · 51.1 tok/s
+Memory: growth paused; waiting=0; suspended=0
+12:07:23 Done · input 8,367 · cached 8,352 · output 85 · tools 12·4f7e2e49 · TTFT 0.3s · 71.9 tok/s
+12:07:25 Done · input 8,607 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 78.6 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:12:43 Done · input 9,406 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.2s · 52.0 tok/s
+12:13:03 Done · input 9,432 · cached 8,128 · output 1,059 · tools 12·4f7e2e49 · TTFT 3.4s · 62.2 tok/s
+12:13:06 Done · input 8,368 · cached 8,352 · output 59 · tools 12·4f7e2e49 · TTFT 0.2s · 74.3 tok/s
+12:13:09 Done · input 8,586 · cached 8,352 · output 117 · tools 12·4f7e2e49 · TTFT 0.8s · 81.6 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:16:27 Done · input 9,690 · cached 8,576 · output 9,732 · tools 12·4f7e2e49 · TTFT 2.9s · 49.8 tok/s
+12:16:55 Done · input 19,490 · cached 9,664 · output 100 · tools 12·4f7e2e49 · TTFT 25.8s · 54.9 tok/s
+12:17:14 Done · input 19,626 · cached 19,456 · output 1,169 · tools 12·4f7e2e49 · TTFT 0.8s · 63.8 tok/s
+12:17:26 Done · input 20,862 · cached 19,616 · output 432 · tools 12·4f7e2e49 · TTFT 3.7s · 53.8 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:17:29 Done · input 8,367 · cached 8,352 · output 86 · tools 12·4f7e2e49 · TTFT 0.3s · 74.4 tok/s
+12:17:32 Done · input 8,612 · cached 8,352 · output 116 · tools 12·4f7e2e49 · TTFT 0.9s · 80.1 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:23:04 Done · input 9,382 · cached 8,576 · output 16,384 · tools 12·4f7e2e49 · TTFT 2.2s · 49.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+12:23:20 Done · input 9,408 · cached 8,128 · output 950 · tools 12·4f7e2e49 · TTFT 3.4s · 71.2 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:23:24 Done · input 8,363 · cached 8,352 · output 83 · tools 12·4f7e2e49 · TTFT 0.3s · 66.8 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:23:26 Done · input 8,600 · cached 8,352 · output 111 · tools 12·4f7e2e49 · TTFT 0.9s · 76.7 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:23:54 Done · input 9,309 · cached 8,576 · output 1,571 · tools 12·4f7e2e49 · TTFT 2.0s · 61.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:24:00 Done · input 10,930 · cached 9,280 · output 123 · tools 12·4f7e2e49 · TTFT 4.4s · 49.0 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:24:14 Done · input 11,089 · cached 10,912 · output 739 · tools 12·4f7e2e49 · TTFT 0.8s · 59.4 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:24:19 Done · input 11,879 · cached 11,072 · output 130 · tools 12·4f7e2e49 · TTFT 2.3s · 58.8 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:24:38 Done · input 12,428 · cached 11,872 · output 1,263 · tools 12·4f7e2e49 · TTFT 1.7s · 70.5 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:24:56 Done · input 13,744 · cached 12,416 · output 953 · tools 12·4f7e2e49 · TTFT 3.7s · 69.2 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:25:01 Done · input 14,717 · cached 13,728 · output 110 · tools 12·4f7e2e49 · TTFT 2.8s · 63.2 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:25:08 Done · input 14,863 · cached 14,688 · output 327 · tools 12·4f7e2e49 · TTFT 0.8s · 49.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+12:25:16 Done · input 8,368 · cached 8,352 · output 58 · tools 12·4f7e2e49 · TTFT 0.3s · 72.9 tok/s
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:25:18 Done · input 8,583 · cached 8,352 · output 113 · tools 12·4f7e2e49 · TTFT 0.9s · 78.6 tok/s
+12:29:01 Cancelled · input 9,765 · cached 8,576 · output 12,228 · tools 12·4f7e2e49 · TTFT 3.2s · 55.6 tok/s
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+Memory: growth available; resource wait cleared
+Memory: growth paused; waiting=0; suspended=0
+12:34:03 Stopping · releasing engine resources

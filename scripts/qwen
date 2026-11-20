@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# One entry point for daily use. Starts the model server ($BACKEND, config/stack.env) when it is down, then:
+#   qwen [dir]                 the dsh web UI on that directory (default: workspace/), opened in the browser
+#   qwen run <dir> "<task>"    one task headless: prints the answer and exits (scripts/run-task.sh)
+#   qwen status                server, memory, power and Defender at a glance (scripts/status.sh)
+#   qwen stop                  stop the model server: the GPU and its memory are free again (scripts/stop.sh)
+#   qwen start                 start the server and wait until it is ready, nothing else
+# dsh ships no terminal UI (its templates: headless, web, acp, sdk); the web UI is the interactive way in.
+# Tip: ln -s "$PWD/scripts/qwen" ~/.local/bin/qwen
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+source "$here/../config/stack.env"
+source "$here/lib/system.sh"
+
+case "${1:-}" in
+  -h|--help|help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  status) exec "$here/status.sh" ;;
+  stop) exec "$here/stop.sh" ;;
+  start) ensure_model_server; exit ;;
+  run)
+    shift
+    [[ $# -ge 2 ]] || { echo "usage: qwen run <dir> \"<task>\"" >&2; exit 2; }
+    ensure_model_server
+    exec "$here/run-task.sh" "$@" ;;
+  *)
+    dir="${1:-$STACK_ROOT/workspace}"
+    [[ -d "$dir" ]] || { echo "error: no directory $dir" >&2; exit 2; }
+    ensure_model_server
+    dir="$(cd "$dir" && pwd)"
+    (sleep 4; open "http://127.0.0.1:${WEB_PORT:-3090}" 2>/dev/null) &
+    exec "$here/web.sh" "$dir" ;;
+esac

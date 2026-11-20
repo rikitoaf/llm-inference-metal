@@ -1,0 +1,118 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -103,13 +103,112 @@
+   }
+ }
+ 
++// Chunk c of a group's 32 weights as dequant32 writes it: inputs 4c..4c+3 (lo) and 16+4c..16+4c+3 (hi), each value
++// rounded once to half exactly as dequant32 rounds it.
++template <class F>
++inline void dequant_chunk(typename F::Payload w, QuantCoef k, ushort c, threadgroup half2 *tl, thread half4 &lo, thread half4 &hi) {
++  const typename F::Chunk q = F::chunk(w, c);
++  if constexpr (F::Kind == QuantLinear) {
++    const uint4 p = F::codes(q);
++    lo = half4(staged_linear<F>(p.x, k.s.x, k.m.x), staged_linear<F>(p.y, k.s.x, k.m.x));
++    hi = half4(staged_linear<F>(p.z, k.s.y, k.m.y), staged_linear<F>(p.w, k.s.y, k.m.y));
++  } else if constexpr (F::Kind == QuantCodebook) {
++    typedef typename F::Scale S;
++    const uchar4 b = as_type<uchar4>(F::indices(q));
++    lo = half4(half2(vec<S, 2>(tl[b.x]) * S(k.s.x)), half2(vec<S, 2>(tl[b.y]) * S(k.s.x)));
++    hi = half4(half2(vec<S, 2>(tl[b.z]) * S(k.s.y)), half2(vec<S, 2>(tl[b.w]) * S(k.s.y)));
++  } else if constexpr (F::Kind == QuantInt8) {
++    typedef typename F::Scale S;
++    const uint2 v = F::values(q);
++    lo = half4(vec<S, 4>(as_type<char4>(v.x)) * S(k.s.x));
++    hi = half4(vec<S, 4>(as_type<char4>(v.y)) * S(k.s.y));
++  } else {
++    const uint2 g = F::grid(q); const uint s = F::signs(q);
++    lo = half4(float4(as_type<uchar4>(g.x)) * k.s.x);
++    hi = half4(float4(as_type<uchar4>(g.y)) * k.s.y);
++    lo = select(lo, -lo, bool4(s & 1, s & 2, s & 4, s & 8));
++    hi = select(hi, -hi, bool4(s & 16, s & 32, s & 64, s & 128));
++  }
++}
++
++// The direct decode tile (GGUF_DECODE_DIRECT): one simdgroup's 32 columns over steps [step_begin, step_end) of K in
++// 32-input steps, each lane dequantizing straight into matmul2d's right input cooperative tensor, so the weights never
++// pass through threadgroup memory and no barrier separates the dequantization from the matmul. In that operand
++// (32 inputs x 32 columns, probed with splash/tools/coop) lane L holds chunk c = (L & 1) | ((L >> 3) & 1) << 1 of
++// columns base + 8j, base = ((L >> 1) & 3) + 4 ((L >> 4) & 1), j = 0..3: element 4j + t is input 4c + t and element
++// 16 + 4j + t input 16 + 4c + t. Every weight is the half dequant32 stages, so the sums are the staged tile's.
++template <class F, ushort Rows, class Acc>
++inline void direct_accumulate(device bfloat *input, device uchar *w0, device uchar *w1, device uchar *meta, uint input_size,
++                              uint output_origin, threadgroup half2 *tl, uint lane, uint step_begin, uint step_end, thread Acc &acc) {
++  constexpr ushort Cols = 32, KS = 32;
++  auto a = tensor(input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
++  constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
++  matmul2d<descriptor, execution_simdgroups<1>> operation;
++  auto b = operation.template get_right_input_cooperative_tensor<bfloat, half, float>();
++  const uint groups = input_size / 32;
++  const uint plane_tile = output_origin / QUANT_TILE_ROWS, plane_row = output_origin % QUANT_TILE_ROWS;
++  const uint units = groups / F::MetaGroups;
++  device uchar *tw0 = w0 + (ulong(plane_tile) * groups * QUANT_TILE_ROWS + plane_row) * F::P0;
++  device uchar *tw1 = w1 + (ulong(plane_tile) * groups * QUANT_TILE_ROWS + plane_row) * F::P1;
++  device uchar *tmeta = meta + (ulong(plane_tile) * units * QUANT_TILE_ROWS + plane_row) * F::MetaBytes;
++  const ushort c = ushort((lane & 1) | (((lane >> 3) & 1) << 1));
++  const uint base = ((lane >> 1) & 3) + 4 * ((lane >> 4) & 1);
++  typename F::Payload packed[4]; typename F::Meta hdr[4];
++  uint hdr_unit = step_begin / F::MetaGroups;
++#pragma unroll
++  for (ushort j = 0; j < 4; ++j) {
++    const uint col = base + 8 * j;
++    if (step_begin < step_end) packed[j] = F::load(tw0 + (ulong(step_begin) * QUANT_TILE_ROWS + col) * F::P0, tw1 + (ulong(step_begin) * QUANT_TILE_ROWS + col) * F::P1);
++    hdr[j] = F::loadMeta(tmeta + (ulong(hdr_unit) * QUANT_TILE_ROWS + col) * F::MetaBytes);
++  }
++  for (uint step = step_begin; step < step_end; ++step) {
++    const uint unit = step / F::MetaGroups; const ushort jg = step % F::MetaGroups;
++    if (unit != hdr_unit) {
++#pragma unroll
++      for (ushort j = 0; j < 4; ++j) hdr[j] = F::loadMeta(tmeta + (ulong(unit) * QUANT_TILE_ROWS + base + 8 * j) * F::MetaBytes);
++      hdr_unit = unit;
++    }
++    typename F::Payload next[4];
++    if (step + 1 < step_end) {
++#pragma unroll
++      for (ushort j = 0; j < 4; ++j) {
++        const uint col = base + 8 * j;
++        next[j] = F::load(tw0 + (ulong(step + 1) * QUANT_TILE_ROWS + col) * F::P0, tw1 + (ulong(step + 1) * QUANT_TILE_ROWS + col) * F::P1);
++      }
++    }
++#pragma unroll
++    for (ushort j = 0; j < 4; ++j) {
++      QuantCoef k;
++      if constexpr (F::ScaleInChunk) k = F::coef(hdr[j], F::chunk(packed[j], 0)); else k = F::coef(hdr[j], jg);
++      half4 lo, hi;
++      dequant_chunk<F>(packed[j], k, c, tl, lo, hi);
++#pragma unroll
++      for (ushort t = 0; t < 4; ++t) { b[4 * j + t] = lo[t]; b[16 + 4 * j + t] = hi[t]; }
++    }
++    auto a_slice = a.template slice<KS, Rows>(step * KS, 0);
++    operation.run(a_slice, b, acc);
++    if (step + 1 < step_end) {
++#pragma unroll
++      for (ushort j = 0; j < 4; ++j) packed[j] = next[j];
++    }
++  }
++}
++
++#ifndef GGUF_DECODE_DIRECT
++#define GGUF_DECODE_DIRECT 1
++#endif
++
+ // The decode tile loop of one simdgroup without the store: its Cols columns over steps [step_begin, step_end) of K.
+ template <class F, ushort Rows, ushort Cols, ushort KS, class Acc>
+ inline void staged_accumulate(device bfloat *input, device uchar *w0, device uchar *w1, device uchar *meta, uint input_size, uint output_origin,
+                      threadgroup half *stage, threadgroup half2 *tl, uint simd_lane, uint step_begin, uint step_end, thread Acc &acc) {
+-  gguf_staged_steps<F, Rows, Cols, KS, 32>(input, w0, w1, meta, input_size, output_origin, stage, tl, simd_lane, step_begin,
+-                                           step_end, true, acc);
+-  simdgroup_barrier(mem_flags::mem_threadgroup);   // the stage may be reused by a following accumulate
++  if constexpr (GGUF_DECODE_DIRECT && Cols == 32 && KS == 32) {
++    direct_accumulate<F, Rows>(input, w0, w1, meta, input_size, output_origin, tl, simd_lane, step_begin, step_end, acc);
++  } else {
++    gguf_staged_steps<F, Rows, Cols, KS, 32>(input, w0, w1, meta, input_size, output_origin, stage, tl, simd_lane, step_begin,
++                                             step_end, true, acc);
++    simdgroup_barrier(mem_flags::mem_threadgroup);   // the stage may be reused by a following accumulate
++  }
+ }
+ 
+ // runtime dequantizer selection (uniform per threadgroup): the format's pair table, which every thread of the

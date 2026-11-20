@@ -44,6 +44,77 @@ Every number here was **measured on this machine on 2026-09-23**, unless it is m
 > `turbo-int4` is the default since 2026-10-06. It finds needles out to 180K tokens, and prefills as
 > fast as INT8. Section 32 covers both formats; [`splash/TURBOQUANT.md`](splash/TURBOQUANT.md) is the
 > full documentation, and [`splash/IMPROVEMENT_PLAN.md`](splash/IMPROVEMENT_PLAN.md) is the next round.
+>
+> **Update 2026-10-14: lithos-metal backend.** `BACKEND=lithos` serves the local Qwen3.8-27B GGUF (Splash's file, read as
+> llama.cpp stores it) with the local DSpark drafter from lithos-metal, built from source with this workspace's
+> turbo-int4 K/V cache (patch 0004): 170K context in ~16.4 GiB, nothing to download. Section 34; the real model is
+> not measured end to end yet.
+
+---
+
+## Daily use (updated 2026-11-21): long-context engine, code graph, OPERATE.md
+
+```bash
+scripts/work ~/WebstormProjects          # dsh web UI + codebase-memory-mcp graph; starts the model server if it is down
+scripts/work run ~/code/repo "<task>"    # one task, headless
+scripts/qwen status                      # engine, drafter, park lane, verify rows, prefill kernel, memory, power
+scripts/qwen stop                        # free the GPU; also needed before switching engine flags
+```
+
+The full operating guide is [OPERATE.md](OPERATE.md) (flags, compaction, memory, tests); results and decisions are in
+[splash/SPEED_LOG.md](splash/SPEED_LOG.md), the deep analysis in [splash/ANALYSIS.md](splash/ANALYSIS.md).
+
+**Default engine** (`config/stack.env`, `SPLASH_ENGINE=dspine`): Splash 1.2.1 + patch 0003 + patch 0005, built in
+`splash/dev-prefill-attn`. Measured at long context (all exact sampling; see SPEED_LOG):
+
+| feature | switch (default) | effect |
+|---|---|---|
+| DSpine drafter (Tencent, block 16, 8192 window) | `SPLASH_DRAFTER=dspine` | +7–14% tok/s at 40–160K in real sessions |
+| Park lane: the previous reply is not prefilled again | `SPLASH_PARK_LANE=1` | follow-up prompt time −31..−44%, turn wall −13..−21% |
+| 8 verify rows from 64K | `SPLASH_VERIFY_ROWS_LONG=8`, `_FROM=65536` | +24% tok/s at 68–103K |
+| Prefill attention v2 | `SPLASH_PREFILL_ATTN_V2=1` | time to first token −8.5% at 60K, −13% at 100K |
+| Compaction keeps the cached prefix | `SPLASH_NO_THINK_KEEPS_PREFIX=1` | ~300 s saved per compaction |
+
+`scripts/work` flags: `--no-park`, `--full-verify`, `--old-prefill`, `--production` (splash-src with DFlash2),
+`--compact`, `--max-context N`. Compaction is dynamic: at the context window minus 10K tokens (`DSH_COMPACT_MARGIN`).
+
+**Harness** (dsh web preset `config/dsh/presets/lean`, plugins in `plugins/`):
+- codebase-memory-mcp code graph (`DSH_CBM=1`, set by `scripts/work`): built from source, full index, re-indexed 4
+  min after code stops changing (`scripts/cbm-autoindex.sh`), results filtered by `plugins/dsh-plugin-fast-search/
+  cbm-mcp-filter.mjs`. Platform bench A/B: score 90% → 98%, wall −16%, steps −40%.
+- `plugins/dsh-plugin-fast-search`: glob/grep skip dependency folders (8 s → 0.2 s); per-turn graph-first, batching
+  and scope reminders; hints on bash/glob/grep results.
+- Tool-result pruner off and 400-line reads in the web preset; xerj MCP off unless `DSH_XERJ=1`.
+
+**Tests**: `scripts/auto-tests.sh` (CPU, ~1 min) and `scripts/auto-tests.sh --gpu [--quick]` (A/Bs, unattended;
+results in `logs/auto-tests/<ts>/summary.md`). Company-specific benchmark tasks and repo lists live only in the
+gitignored `workspace/`.
+
+### Building the default engine from a fresh clone
+```bash
+cp -Rp splash/splash-src splash/dev-prefill-attn          # splash-src = Splash 1.2.1 with patch 0003 applied
+cd splash/dev-prefill-attn && git apply ../../patches/0005-splash-dspine-park-lane-longctx-prefill-attn.patch && make all
+```
+DSpine needs its checkpoint (`tencent/Qwen3.8-27B-DSpine-b16`, ~4 GB, Apache-2.0) in the Hugging Face cache, or
+`SPLASH_DSPINE_DIR` pointing at it.
+
+## Daily use (2026-11-02)
+
+```bash
+scripts/qwen ~/WebstormProjects/myapp          # web UI on that folder; starts the model server first if it is down
+scripts/qwen run ~/code/repo "fix the failing date test; run the tests"   # one task, headless
+scripts/qwen status                            # server state, settings, memory, power, Defender
+scripts/qwen stop                              # stop the server: the GPU and its ~16 GiB are free again
+```
+
+- **Startup:** a cold start takes ~45 s. Splash needs ~16 GiB reclaimable memory; `qwen status` shows how much there is.
+- **Idle:**
+  - Splash drops its weights after `SPLASH_IDLE_RELEASE` (10m) without a request.
+  - `SPLASH_IDLE_STOP=30m` in `config/stack.env` also stops the whole server after that long (`scripts/idle-stop.sh`).
+  - `qwen` starts it again on demand.
+- **Health:** `scripts/doctor.sh` checks the whole stack, including Defender, power, memory, the runaway guard and the
+  dsh context window.
+- **Shortcut:** `ln -s "$PWD/scripts/qwen" ~/.local/bin/qwen` makes `qwen` work from anywhere.
 
 ---
 
@@ -89,6 +160,7 @@ Every number here was **measured on this machine on 2026-09-23**, unless it is m
 31. [Splash backend (2026-09-29)](#31-splash-backend-2026-09-29)
 32. [TurboQuant KV in Splash (2026-10-05)](#32-turboquant-kv-in-splash-2026-10-05)
 33. [Swift 1.5 Qwen3.8-27B Uncensored (2026-10-08)](#33-swift-15-qwen38-27b-uncensored-2026-10-08)
+34. [lithos-metal backend with turbo-int4 KV and GGUF weights (2026-10-14)](#34-lithos-metal-backend-with-turbo-int4-kv-and-gguf-weights-2026-10-14)
 
 ---
 
@@ -486,6 +558,12 @@ plan-mode and LLM session titles, and keeps `bash`, `read`, `edit`, `write`, `re
 `grep`. Every tool schema is prompt the local model must prefill. This profile's first request is
 2,872 tokens; Claude Code's is ~19.7K (section 24).
 
+These rows only reach the headless profile. The web app disables the base tool rows and gives each
+session an agent preset instead; the shipped default, `standard`, sent 32 tools (~52K characters of
+schema) with a pruner threshold of 8,192 and `run_in_background` on. `config/dsh/presets/lean` carries
+block 3 (plus `ask_user` and the 16,384 pruner threshold) as a preset, and `config/dsh/web.cordis.patch.yml`,
+added by `scripts/dsh-env.sh` for web profiles only, makes it the default for new sessions.
+
 **Block 4: the JEV plugin**
 
 ```yaml
@@ -775,8 +853,12 @@ their new tokens.
   done check real evidence.
 - **Prefer edits over rewrites.** n-gram speculation makes re-emitting existing code 7-9x faster; new
   text gets the smaller MTP gain (+33%).
-- **Leave thinking on.** It is the `reasoning: high` default. If you want faster, shallower runs, set
-  `reasoning: off` on the provider in the patch (*untested here*).
+- **Leave thinking on.** It is the `reasoning: high` default, which Splash runs as the template's `xhigh`
+  (the template maps high to xhigh). When one reply thinks past the 16,384-token reply budget, the runaway guard
+  (`plugins/dsh-plugin-runaway`) continues the run with thinking off for one step instead of ending it: eval pass
+  45% -> 85% at xhigh (splash/SPEED_LOG.md, 2026-11-02). Compaction summaries are the exception: they run with
+  thinking off (`plugins/dsh-plugin-purpose-effort`, only requests with purpose `compaction`), because at xhigh
+  they took 230-465 s and one failed when its reasoning used the 8,192-token summary budget (2026-11-04).
 - **One agent at a time.** The server has one chat slot (`-np 1`).
 
 **Project instructions:** dsh's `dsh-agent-instructions` plugin loads instruction files into the first
@@ -788,6 +870,24 @@ request:
 
 The budget is 64 KB. Put your repo's conventions there: the test command, the style rules, and what not
 to touch. Keep them short, because every byte is prefill.
+
+**Coding guidelines and handoff** (`plugins/dsh-plugin-guidelines`, patch row 4d, 2026-11-04). Every agent, on
+both the headless and web profiles, gets four static system-prompt sections (~8.3K chars). They sit in the cached
+prefix, so they cost one cold prefill, not one per step:
+
+| Rule file | Source | What it asks |
+|---|---|---|
+| `rules/karpathy.md` | [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) CLAUDE.md (MIT) | think first, simplicity, surgical changes, verifiable goals |
+| `rules/ponytail.md` | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) AGENTS.md (MIT) | the smallest complete change: reuse, stdlib, no unrequested abstractions. Karpathy wins any conflict: "Deletion beats addition" and "a vague request gets the smallest version" were removed |
+| `rules/naming.md` | your naming conventions | self-documenting names; rename only code you are already changing |
+| `rules/handoff.md` | format adapted from willseltzer/claude-handoff | the HANDOFF.md sections, and how to resume from one |
+
+`/handoff [quick] [notes]` asks the agent to write `HANDOFF.md`, and `/resume` asks it to continue from one (web
+UI; headless has no command adapter, so ask in the task text instead). A session that starts in a folder with a
+`HANDOFF.md` gets a one-paragraph notice pointing at it. The notice is fixed for the session, so the prefix cache
+holds. To turn a rule set off, drop its name from `rules:` in the patch. Test: `node scripts/test-guidelines.mjs`.
+Only the instruction text was ported. Ponytail's Claude Code hooks (mode tracker, statusline, task board, webhook)
+and its `/ponytail-*` skills were not, because `tool-skill` is disabled in this stack.
 
 ## 16. Step 12: Calibrate the thresholds
 
@@ -1265,10 +1365,12 @@ dsh-qwen-jev/
 ├── config/
 │   ├── stack.env                      every path, port and knob (sourced by all scripts)
 │   ├── dsh/qwen.cordis.patch.yml      dsh patch layer: provider, default model, tools, JEV plugin
-│   └── dsh/splash.cordis.patch.yml    BACKEND=splash overrides: provider URL, reasoning_effort, JEV over /v1/systemone
+│   ├── dsh/splash.cordis.patch.yml    BACKEND=splash overrides: provider URL, reasoning_effort, JEV over /v1/systemone
+│   └── dsh/lithos.cordis.patch.yml    BACKEND=lithos overrides: provider URL, no reasoning_effort, JEV off
 ├── scripts/
 │   ├── serve-llama.sh                 start llama-server (TurboQuant KV, ngram spec, /v1/decision)
 │   ├── serve-splash.sh                start Splash (UD-IQ3_XXS + DFlash2, SSD cache tier, /v1/systemone)
+│   ├── serve-lithos.sh                start lithos-metal (local GGUF + DSpark, turbo-int4 KV, SSD prefix cache)
 │   ├── dsh-env.sh                     env for dsh (DSH_HOME, Node 22, telemetry off, placeholder key)
 │   ├── run-task.sh                    headless: run-task.sh <workdir> "<task>"
 │   ├── web.sh                         Web UI on :3090
@@ -1285,8 +1387,14 @@ dsh-qwen-jev/
 ├── llama/atomic-llama-cpp-turboquant/ fork clone, branch jev/parallel-decision, static build in build/bin
 ├── patches/0001-...patch               the /v1/decision port (JEV)
 ├── patches/0002-...patch               Metal small-batch kernels for i-quants (fast MTP verification)
-├── patches/0003-...patch               Splash 1.2.1: TurboQuant KV (turbo, turbo-int4) + build without Xcode
-├── splash/                            splash-src/ (Splash 1.2.1 + patch 0003), tools/ (tests, benchmarks),
+├── patches/0003-...patch               Splash 1.2.1: TurboQuant KV (turbo, turbo-int4) + build without Xcode,
+│                                      16-node draft tree, draft head shortlist (SPLASH_DRAFT_HEAD_ROWS)
+├── patches/0004-...patch               lithos-metal: turbo-int4 K/V, GGUF weights, 16-core M5 Pro backend
+├── patches/0005-...patch               on top of 0003: DSpine drafter, park lane, 8 verify rows from 64K,
+│                                      prefill attention v2 (the default engine, splash/dev-prefill-attn)
+├── lithos/                            lithos-src/ (lithos-metal + patch 0004, its own .venv), LITHOS.md
+├── splash/                            splash-src/ (Splash 1.2.1 + patch 0003), dev-*/ (gitignored engine copies),
+│                                      tools/ (tests, benchmarks, A/B scripts), ANALYSIS.md, SPEED_LOG.md,
 │                                      TURBOQUANT.md (full documentation), HANDOFF.md (working state)
 ├── examples/
 │   ├── demo-project/                  pristine buggy slugify + tests (tutorial fixture)
@@ -1331,6 +1439,9 @@ Any variable can be overridden from the environment for one run.
 | `SPLASH_SRC` | `$STACK_ROOT/splash/splash-src` | Source build used when present (else Homebrew Splash) |
 | `SPLASH_KV_FORMAT` | `turbo-int4` | `turbo-int4`, `turbo`, `int8` or `bf16` (section 32) |
 | `SPLASH_PERSISTENT_CACHE` | `1` | Keep the SSD prefix cache across restarts (source build) |
+| `SPLASH_CACHE_TOTAL_DISK` | `48G` | Total cap over all persistent-cache namespaces (one per model, KV format and quantizer revision); `serve-splash.sh` prunes the least recently used first |
+| `SPLASH_DEFAULT_TEMPERATURE` | empty (1.0) | Temperature for requests that set none; dsh sets none. 0.6 gave +6% tokens/cycle but changes outputs: eval first |
+| `SPLASH_DRAFT_TEMPERATURE_SCALE` | empty (1) | The draft proposes at this fraction of the temperature; outputs unchanged. 0.35 gave +4% tokens/cycle at T=1.0 |
 | `WEB_PORT` | `3090` | Web UI (read by `web.sh`) |
 
 ### 26.2 JEV plugin config (the `jev` row in the patch)
@@ -1730,3 +1841,112 @@ the six `eval/` tasks per model):
   the model for work.
 - **Refusals are mostly gone.** With JEV off, the dsh sandbox (writes confined to the working directory
   and `/tmp`) is the only limit on what the agent runs (section 31.5).
+
+## 34. lithos-metal backend with turbo-int4 KV and GGUF weights (2026-10-14)
+
+A third model server: **lithos-metal** (github.com/lithos-ai/lithos-metal, Apache 2.0), a Metal engine that compiles
+the model into per-layer kernels replayed from a GPU-resident command buffer, with **DSpark** speculative decoding.
+This workspace builds it from source (`lithos/lithos-src`, `patches/0004`) with four additions:
+
+1. **Our turbo-int4 K/V cache** (`--kv-format turbo-int4`), the format of section 32, for the target and for the DSpark
+   drafter's context cache.
+2. **170K context** (`LITHOS_MAX_CONTEXT=174080`; upstream serves 32K and its attention workspace alone would need ~16 GiB
+   at 170K). Attention keeps at most 64 partial results per row at any length and prepares its queries once.
+3. **GGUF weights read as llama.cpp stores them.** lithos itself reads only MLX 4-bit / NVFP4 / FP8 safetensors, and
+   its smallest Qwen3.8-27B (15 GiB) barely fits this Mac. Now it serves **the files already here**: Splash's Unsloth
+   UD-IQ3_XXS (10.2 GiB), Swift's, any `qwen35` GGUF, and the local DSpark drafter (`~/models/dspark/…Q8_0.gguf`).
+   Nothing is downloaded.
+4. **The 16-core M5 Pro** (upstream knows only the 20-core one and refused this Mac).
+
+Details, design and the full test list: `lithos/LITHOS.md`.
+
+**Using it.**
+
+```bash
+./scripts/stop.sh                                            # one 27B server at a time
+MODEL_PROFILE=swift ./scripts/serve-lithos.sh                # :8001, the profile's GGUF + the local DSpark drafter, 170K
+MODEL_PROFILE=swift BACKEND=lithos ./scripts/web.sh ~/code/myproject
+BACKEND=lithos ./scripts/run-task.sh workspace/demo "fix the failing test"
+```
+
+dsh's window follows the server: 174,080 − 8,192 (reply budget) − 4,096 = 161,792 tokens.
+
+The first start writes the packed weights (~12 GiB, ~1 min) under `~/.cache/lithos-metal/packs`; another context size
+packs again (the RoPE tables follow it). Knobs in `config/stack.env`: `LITHOS_MODEL` (default: the profile's GGUF),
+`LITHOS_DRAFT` (the local DSpark GGUF; `none`, `auto` or a path), `LITHOS_KV_FORMAT` (`turbo-int4` | `bf16`),
+`LITHOS_MAX_CONTEXT` (174080), `LITHOS_PORT` (8001), `LITHOS_PREFIX_DISK` (32G), `LITHOS_PREFIX_MEMORY` (1G),
+`LITHOS_EXTRA_ARGS`. `scripts/doctor.sh` checks it with `BACKEND=lithos`.
+
+**Memory at 170K (measured from the compiled programs):** weights 12.07 GiB (target 9.95, drafter 1.9, RoPE tables),
+turbo-int4 caches 3.62 GiB (target 2.74, drafter 0.88), recurrent state 0.29 GiB, workspaces 0.37 GiB: **16.35 GiB**
+of the 17.8 GiB GPU budget. Close Teams and WebStorm first; `LITHOS_DRAFT=none` saves 2.8 GiB, and 32K needs ~13 GiB.
+The prefix checkpoints keep 1 GiB in RAM; a larger one (a 100K-token conversation: ~2.4 GiB) is written through to the
+SSD tier and restored from there, so long agent conversations are not prefilled again every turn.
+
+**Long-context attention (one layer at Qwen3.8-27B's shape, GPU ms):**
+
+| keys | rows | upstream partitions | bounded | bounded + prepared queries |
+|---:|---:|---:|---:|---:|
+| 32K | 8 (verify) | 3.38 | 2.17 | 1.80 |
+| 32K | 128 (prefill) | 52.0 | 35.1 | 19.6 |
+| 170K | 8 | — | 10.9 | 8.7 |
+| 170K | 128 | — | 172 | 100 |
+| 170K | 1 (no drafter) | — | 3.7 | (staged) |
+
+Upstream stores one partial result per 32 keys per query row; at 170K that is ~16 GiB for a prompt chunk. Now each
+block walks as many 32-key tiles as keep 64 partitions, with an online softmax, and a prepare dispatch writes the
+rotated queries once so a block takes 64 query rows: the same results, 1.2–2.7× faster.
+
+**How the GGUF path works.**
+- A GGUF file is prepared as a checkpoint directory: an HF config from its metadata, the HF tokenizer Splash keeps for
+  the model (checked token by token against the GGUF's vocabulary), and a reader that serves every tensor under its HF
+  name with llama.cpp's conversion undone (`1 + w` norms, `ssm_a = −exp(A_log)`, the linear-attention V heads put
+  back in grouped order; `out_proj`'s reordered columns become an input gather).
+- Matrices stay as GGUF blocks, one ggml type per row, so a slab can stack q, k, v and gate of four different types.
+  14 types are decoded (IQ1_S/M, IQ2_XXS/XS/S, IQ3_XXS/S, IQ4_XS, Q2_K–Q6_K, Q8_0, plus F16/BF16/F32) by llama.cpp's own
+  Metal dequantizers, vendored with their MIT license.
+- Kernels, one dispatch per run of one type: `gguf_mv` up to 2 rows (activations staged in threadgroup memory),
+  `gguf_mm` above (a weight tile dequantized into threadgroup memory, then the matrix units, as llama.cpp's
+  `kernel_mul_mm`), `gguf_embed` for the token gather.
+
+**Tested (no download, no full-model run):**
+- every type on real rows from the local GGUFs against llama.cpp's Python dequantizers, at 1 to 128 rows, with
+  silu·mul, the residual add and the gather (output error ≤ 0.5 % of the largest output);
+- a synthetic Qwen3.5 hybrid written as a GGUF with llama.cpp's transforms: the reader returns every HF tensor exactly;
+  BF16 GGUF rows decode the same tokens as the safetensors checkpoint; Q8_0 rows match the oracle; DSpark speculative
+  decoding equals plain decoding; turbo-int4 K/V on GGUF weights matches its oracle (to ties);
+- the real UD-IQ3_XXS + DSpark: packed, and its decode, verify and prefill programs emitted and their 216 kernels compiled;
+- turbo-int4: kernels code-for-code with the oracle; attention within 2–5 % of BF16 on the matrix units.
+
+**Kernel speed on this Mac (real matrices, GPU ms, desktop apps open):**
+
+| matrix (type, size) | 1 row | 8 rows (DSpark verify) | 128 rows (prefill) |
+|---|---:|---:|---:|
+| MLP gate+up (IQ2_S, 55 MiB) | 0.52–0.97 | 0.89 | 3.0 |
+| MLP down (IQ3_XXS, 33 MiB) | 0.23 | 1.0 | 1.6 |
+| GDN qkv (IQ4_XS, 27 MiB) | 0.14 | 1.2 | 0.9 |
+| lm_head (Q4_K, 715 MiB) | 3.9–5.2 | 5.7 | 19.7 |
+
+Single rows reach 140–200 GB/s on IQ3_XXS / IQ4_XS / Q4_K; IQ2_S and IQ1 are ALU-bound (60–110 GB/s). Prefill was
+13–25× faster after moving to the matrix units.
+
+**Real model, measured (2026-10-14; kvbench prompts, `logs/kvbench/lithos-i4.json`, details in `lithos/LITHOS.md` §4):**
+
+- **Accuracy: same as Splash.** Needles 6/6 (16K and 58K tokens, depths 10/50/90 %). Greedy text 7/12 identical to
+  Splash turbo-int4 on the same GGUF (425/632 words before divergence), where Splash int8 vs turbo-int4 is 8/12 and two
+  Splash turbo-int4 builds 5/12. The divergences are near-tie word choices, and the answers stay correct. The
+  tokenizer is token-identical to llama.cpp's.
+- **Speed: 4–5× slower than Splash, so Splash stays the default.**
+
+| | lithos | Splash turbo-int4 |
+|---|---:|---:|
+| decode, 0 / 24K context | 10.5 / 6.6 tok/s (354 / 410 ms per 8-row step, 3.7 / 2.7 tokens) | ~50 tok/s (91 ms, 4.5 tokens) |
+| prefill, 16K / 58K prompt | 100 / 80 tok/s (58K: 12 min) | 405 / 340 tok/s (58K: under 3 min) |
+
+Two bugs were found and fixed by this run. The GGUF kernels' row-count predicate ran every T-variant on every step
+(845 → 364 ms per step). A single-message prompt never got a prefix checkpoint, so an exact repeat prefilled again.
+The next work, if lithos is to beat Splash, is prefill (`gguf_mm`) and the verify step; see `lithos/LITHOS.md`.
+
+**Limits.** lithos's serving path runs with thinking off. No JEV endpoint. The local DSpark drafter is a different
+checkpoint from LithosAI's (block 15, its own tap layers): 3.7 tokens per 8-row step at short context, against Splash's 4.5 with the same file. The 16-core
+config is the 20-core one's engine block (`validation: derived`).

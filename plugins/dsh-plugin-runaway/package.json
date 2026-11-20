@@ -1,0 +1,10 @@
+{
+  "name": "dsh-plugin-runaway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Keeps the agent going when a reply hits max_tokens while still thinking",
+  "main": "index.mjs",
+  "keywords": ["dsh-plugin"],
+  "license": "MIT"
+}

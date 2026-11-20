@@ -43,12 +43,23 @@ def get(path):
 # separate decode speed into draft acceptance and per-cycle kernel time, and show the disk tier's
 # write-behind during a prefill.
 STATUS_COUNTERS = {
-    "metrics": ("prefill_wall_ms", "prefill_input_tokens", "decode_cycle_ms", "decode_output_tokens",
+    "metrics": ("prefill_wall_ms", "prefill_input_tokens", "decode_cycle_ms", "decode_wall_ms", "decode_output_tokens",
                 "drafted_tokens", "accepted_draft_tokens"),
     "scheduler": ("decode_batches", "prefill_batches"),
     "disk": ("written_bytes", "read_bytes", "kv_demotions", "kv_copies", "kv_restores"),
     "requests": ("completed",),
 }
+
+
+def find_key(tree, key):
+    """The first value stored under key anywhere in a nested /status object."""
+    if isinstance(tree, dict):
+        if key in tree:
+            return tree[key]
+        for value in tree.values():
+            if (found := find_key(value, key)) is not None:
+                return found
+    return None
 
 
 def counters():
@@ -57,6 +68,10 @@ def counters():
     except Exception:
         return {}
     out = {f"{g}.{k}": st.get(g, {}).get(k) for g, keys in STATUS_COUNTERS.items() for k in keys}
+    # Engine-side decode time (model lifetime): GPU time and the wall time from submission. With the request's
+    # decode_cycle_ms they split a cycle into GPU work, encode/launch (wall - gpu) and host gaps (cycle - wall).
+    timing = find_key(st, "model_timing") or {}
+    out.update({f"model_timing.decode.{k}": timing.get("decode", {}).get(k) for k in ("total_gpu_ms", "total_wall_ms")})
     wb = st.get("disk", {}).get("write_behind", {})
     out.update({"disk.write_behind.durable": wb.get("durable"), "disk.write_behind.waiting": wb.get("waiting")})
     return out
@@ -69,6 +84,13 @@ def delta(before, after):
     if d.get("scheduler.decode_batches"):
         d["ms_per_cycle"] = round(d["metrics.decode_cycle_ms"] / d["scheduler.decode_batches"], 3)
         d["tokens_per_cycle"] = round(d["metrics.decode_output_tokens"] / d["scheduler.decode_batches"], 3)
+    if d.get("scheduler.decode_batches") and d.get("model_timing.decode.total_gpu_ms") is not None:
+        cycles = d["scheduler.decode_batches"]
+        d["gpu_ms_per_cycle"] = round(d["model_timing.decode.total_gpu_ms"] / cycles, 3)
+        if d.get("model_timing.decode.total_wall_ms") is not None:
+            d["launch_ms_per_cycle"] = round((d["model_timing.decode.total_wall_ms"] - d["model_timing.decode.total_gpu_ms"]) / cycles, 3)
+        if d.get("metrics.decode_wall_ms") is not None:
+            d["host_ms_per_cycle"] = round((d["metrics.decode_cycle_ms"] - d["metrics.decode_wall_ms"]) / cycles, 3)
     if d.get("metrics.drafted_tokens"):
         d["acceptance"] = round(d["metrics.accepted_draft_tokens"] / d["metrics.drafted_tokens"], 4)
     return d
@@ -83,6 +105,8 @@ def nonce():
 def chat(content, max_tokens, temperature=0):
     body = {"model": MODEL, "messages": [{"role": "user", "content": content}], "max_tokens": max_tokens,
             "temperature": temperature, "reasoning_effort": "none", "stream": False}
+    if temperature is None:              # as dsh sends it: no temperature, so the server's default applies
+        del body["temperature"]
     before = counters()
     r, wall = post("/v1/chat/completions", body)
     d = delta(before, counters())
@@ -115,12 +139,18 @@ def calibrate():
     return len(sample) / max(1, tokens_of(sample))       # characters per token for this corpus
 
 
-def part_speed(res):
+def part_speed(res, temperature=0.0, repeats=2):
+    """400 tokens of new code. At temperature > 0 the draft is accepted by the sampling rule, as an agent's are
+    (dsh sends no temperature, so Splash samples at its default); repeats then average over the randomness."""
     prompt = ("Write a Python module implementing a thread-safe LRU cache class with get, put and delete, plus a "
               "decorator that caches function results with it. Include docstrings and type hints.")
-    res["speed"] = [chat(prompt, 400) for _ in range(2)]
+    res["speed"] = [dict(chat(prompt, 400, temperature), temperature=temperature) for _ in range(repeats)]
     for s in res["speed"]:
-        print(f"  speed: decode {s['decode_tps']} tok/s, {s['predicted_n']} tokens, wall {s['wall_s']} s", flush=True)
+        d = s.get("status_delta", {})
+        print(f"  speed (T={temperature}): decode {s['decode_tps']} tok/s, {s['predicted_n']} tokens, wall {s['wall_s']} s, "
+              f"{d.get('tokens_per_cycle')} tokens/cycle at {d.get('ms_per_cycle')} ms (gpu {d.get('gpu_ms_per_cycle')}, "
+              f"launch {d.get('launch_ms_per_cycle')}, host {d.get('host_ms_per_cycle')}), acceptance {d.get('acceptance')}",
+              flush=True)
 
 
 def part_needles(res, sizes, cpt, depths=(0.1, 0.5, 0.9)):
@@ -290,7 +320,7 @@ def run(a):
     cpt = calibrate()
     print(f"  {cpt:.2f} characters per token", flush=True)
     if "speed" in a.parts:
-        part_speed(res); save("speed")
+        part_speed(res, a.temperature, a.speed_repeats); save("speed")
     if "needles" in a.parts:
         part_needles(res, a.needle_tokens, cpt, a.depths); save("needles")
     if "judgments" in a.parts:
@@ -394,6 +424,12 @@ def compare(a):
         if ds:
             drafted = sum(d["metrics.drafted_tokens"] for d in ds)
             cycles = sum(d.get("scheduler.decode_batches", 0) for d in ds)
+            split = [d for d in ds if d.get("gpu_ms_per_cycle") is not None]
+            if split:
+                c = sum(d["scheduler.decode_batches"] for d in split)
+                print(f"  cycle {x}: gpu {sum(d['model_timing.decode.total_gpu_ms'] for d in split) / c:.2f} ms, "
+                      f"launch {sum(d['model_timing.decode.total_wall_ms'] - d['model_timing.decode.total_gpu_ms'] for d in split) / c:.2f} ms, "
+                      f"host {sum(d['metrics.decode_cycle_ms'] - d['metrics.decode_wall_ms'] for d in split) / c:.2f} ms per cycle")
             print(f"  decode {x}: draft acceptance {sum(d['metrics.accepted_draft_tokens'] for d in ds) / drafted:.3f}, "
                   f"{sum(d['metrics.decode_output_tokens'] for d in ds) / max(cycles, 1):.2f} tokens/cycle, "
                   f"{sum(d['metrics.decode_cycle_ms'] for d in ds) / max(cycles, 1):.2f} ms/cycle over {len(ds)} requests")
@@ -410,6 +446,9 @@ def main():
     r.add_argument("--judgment-tokens", type=int, default=24000)
     r.add_argument("--greedy-context", type=int, default=24000)
     r.add_argument("--fresh", action="store_true", help="start a new results file instead of merging")
+    r.add_argument("--temperature", type=lambda v: None if v == "default" else float(v), default=0.0,
+                   help="sampling temperature of the speed part; 'default' sends none, as dsh does")
+    r.add_argument("--speed-repeats", type=int, default=2, help="requests in the speed part")
     r.add_argument("--nonce", action="store_true",
                    help="also prefix judgment and greedy prompts with a per-run nonce (needles always have one). "
                         "Off by default so formats see byte-identical prompts; the persistent cache cannot serve "

@@ -9,6 +9,18 @@ bad()  { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; fails=$((fails + 1)); }
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$1"; }
 head1(){ printf '\n\033[1m%s\033[0m\n' "$1"; }
 
+head1 "machine"
+on_ac_power && ok "on AC power" || warn "on battery: Low Power mode throttles the GPU (plug in for full speed)"
+d=$(defender_cpu)
+(( d > 30 )) && warn "Microsoft Defender scanning at ${d}% CPU: generation runs ~10% slower meanwhile (README: Defender exclusions)" \
+  || ok "Defender quiet (${d}% CPU)"
+avail=$(reclaimable_gib)
+if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail < 16 )) && ! model_process_running; then
+  warn "~$avail GiB reclaimable: Splash needs ~16 GiB to start and waits until it has it (close IDEs, Teams)"
+else
+  ok "~${avail:-?} GiB reclaimable memory"
+fi
+
 head1 "model server (BACKEND=$BACKEND)"
 if [[ "$BACKEND" == "llama" ]]; then
   [[ -x "$LLAMA_SERVER" ]] && ok "llama-server binary: $LLAMA_SERVER" || bad "llama-server missing: $LLAMA_SERVER (README step 2)"
@@ -37,6 +49,26 @@ if [[ "$BACKEND" == "llama" ]]; then
     bad "server not reachable on $LLAMA_HOST:$LLAMA_PORT - run scripts/serve-llama.sh"
   fi
 
+elif [[ "$BACKEND" == "lithos" ]]; then
+  if [[ -x "$LITHOS_SRC/.venv/bin/lithos-metal" ]]; then
+    ok "lithos-metal source build: $LITHOS_SRC ($("$LITHOS_SRC/.venv/bin/lithos-metal" --version 2>/dev/null | tr -d '\n'), branch $(git -C "$LITHOS_SRC" branch --show-current 2>/dev/null))"
+    grep -q "TURBO_INT4" "$LITHOS_SRC/kernels/common/gqa_common.metal" 2>/dev/null \
+      && ok "turbo-int4 K/V kernels present" || bad "lithos-src lacks the turbo-int4 patch: git apply patches/0004-*.patch"
+  else
+    bad "no lithos-metal: set up lithos/lithos-src (README 34)"
+  fi
+  [[ -f "$LITHOS_MODEL" || "$LITHOS_MODEL" != /* ]] && ok "model: $LITHOS_MODEL" || bad "LITHOS_MODEL missing: $LITHOS_MODEL"
+  [[ "$LITHOS_DRAFT" == auto || "$LITHOS_DRAFT" == none || -f "$LITHOS_DRAFT" ]] && ok "drafter: $LITHOS_DRAFT" || bad "LITHOS_DRAFT missing: $LITHOS_DRAFT"
+  if curl -sf -m 3 "http://$LLAMA_HOST:$LITHOS_PORT/health" >/dev/null; then
+    m="$(curl -s -m 5 "http://$LLAMA_HOST:$LITHOS_PORT/v1/models")"
+    ids="$(python3 -c "import json,sys; print(' '.join(x['id'] for x in json.loads(sys.argv[1])['data']))" "$m" 2>/dev/null)"
+    ctx="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['data'][0]['context_window'])" "$m" 2>/dev/null)"
+    ok "lithos-metal up on $LLAMA_HOST:$LITHOS_PORT (context $ctx; KV $LITHOS_KV_FORMAT as configured: the server does not report it)"
+    [[ " $ids " == *" $MODEL_ALIAS "* ]] && ok "model id '$MODEL_ALIAS' served" || bad "served ids '$ids' do not include '$MODEL_ALIAS' (serve-lithos.sh sets --served-model-name)"
+  else
+    bad "lithos-metal not reachable on $LLAMA_HOST:$LITHOS_PORT - run scripts/serve-lithos.sh"
+  fi
+
 else
   if [[ -x "$SPLASH_SRC/splash" ]]; then
     ok "Splash source build: $SPLASH_SRC ($(git -C "$SPLASH_SRC" describe --tags 2>/dev/null) + TurboQuant patch)"
@@ -52,6 +84,11 @@ else
     [[ -n "$loaded" && "$loaded" != "$SPLASH_MODEL" ]] && warn "the server runs $loaded but MODEL_PROFILE=$MODEL_PROFILE selects $SPLASH_MODEL: restart it (scripts/stop.sh; scripts/serve-splash.sh)"
     fmt="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['identity']['kv']['format'])" "$st" 2>/dev/null)"
     ctx="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['maximum_context_tokens'])" "$st" 2>/dev/null)"
+    gen="$DSH_HOME/splash.generated.cordis.patch.yml"
+    win="$(sed -n 's/.*contextWindow: \([0-9][0-9]*\).*/\1/p' "$gen" 2>/dev/null)"
+    [[ "$ctx" =~ ^[0-9]+$ && -n "$win" ]] && { [[ "$win" == "$(( ctx - 20480 ))" ]] \
+      && ok "dsh context window $win = server limit $ctx - reply budget and margin" \
+      || warn "dsh context window $win does not follow the server limit $ctx: source scripts/dsh-env.sh while the server is up"; }
     case "$fmt" in
       turbo-int4) ok "KV format $fmt: context $ctx tokens (dsh window follows it, scripts/dsh-env.sh)" ;;
       turbo) warn "KV format turbo: context $ctx tokens, but 2.2-2.4x slower attention than turbo-int4 for ~10% more context" ;;
@@ -69,7 +106,7 @@ else
     [[ "$JEV" == "1" ]] && { python3 -c "import json,sys; sys.exit(0 if json.loads(sys.argv[1])['answers']['failed']['noul'] > 0.5 else 1)" "$out" 2>/dev/null \
       && ok "/v1/systemone works (JEV gates)" || bad "/v1/systemone failed: $(echo "$out" | head -c 200)"; }
   else
-    bad "splash not reachable on $LLAMA_HOST:$SPLASH_PORT - run scripts/serve-splash.sh"
+    bad "splash not reachable on $LLAMA_HOST:$SPLASH_PORT - run scripts/qwen start"
   fi
 fi
 
@@ -85,6 +122,10 @@ python3 -c "import sys; v=tuple(map(int,sys.argv[1].lstrip('v').split('.'))); sy
 dump="$(cd "$STACK_ROOT" && "$DSH_BIN" $(dsh_profile_args qwen headless) --dump-config 2>&1)"
 [[ "$JEV" == "1" ]] && { grep -q "dsh-plugin-jev/index.mjs" <<<"$dump" && ok "patch composes (jev row present)" || bad "patch did not compose: $(head -c 300 <<<"$dump")"; }
 [[ "$JEV" == "1" ]] || ok "JEV gates off (JEV=1 turns them on)"
+grep -q "dsh-plugin-runaway/index.mjs" <<<"$dump" && ok "runaway guard loaded (a reply cut by max_tokens continues with thinking off)" \
+  || warn "runaway guard not in the composed config: replies that think past max_tokens end the run (config/dsh/qwen.cordis.patch.yml 4b)"
+(cd "$STACK_ROOT/plugins/dsh-plugin-runaway" && "$NODE_BIN/node" -e "import('./index.mjs').then(m=>{if(!m.apply||!m.Config)process.exit(1)})" 2>/dev/null) \
+  && ok "dsh-plugin-runaway imports" || bad "dsh-plugin-runaway failed to import"
 grep -q "provider: llama-local" <<<"$dump" && ok "default model -> llama-local/$MODEL_ALIAS" || bad "agent-default-model not set to llama-local"
 
 head1 "result"

@@ -14,6 +14,8 @@ __pycache__/
 # nested clones: their changes are carried by patches/
 llama/
 splash/splash-src/
+# learnharness app clone (AGPL-3.0, upstream github.com/amosblomqvist/learnharness); see LEARNHARNESS.md
+learnharness/
 # built test binaries and generated files
 splash/tools/attn_perf
 splash/tools/int4_probe
@@ -28,3 +30,11 @@ eval/results/*/*.stderr
 eval/results/*.log
 .DS_Store
 *.pyc
+
+# lithos-metal clone: its changes are carried by patches/0004
+lithos/lithos-src/
+lithos/*.log
+splash/splash-dev/
+splash/dev-*/
+# generated presets (scripts/dsh-env.sh writes them at launch)
+dsh-home/presets-generated/

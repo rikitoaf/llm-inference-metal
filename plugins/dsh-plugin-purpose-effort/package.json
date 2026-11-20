@@ -1,0 +1,10 @@
+{
+  "name": "dsh-plugin-purpose-effort",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Sets reasoning effort for non-agent model calls (compaction summaries) by request purpose",
+  "main": "index.mjs",
+  "keywords": ["dsh-plugin"],
+  "license": "MIT"
+}

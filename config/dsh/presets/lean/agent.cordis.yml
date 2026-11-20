@@ -1,0 +1,81 @@
+# The `lean` agent preset: the web UI's counterpart to section 3 of config/dsh/qwen.cordis.patch.yml.
+#
+# The web app disables the base tool rows and mounts an agent preset per session instead (shipped
+# default `standard`: 32 tools with xerj, ~52K chars of schema prefilled on every request). The patch's
+# `disabled:` rows and its tool-bash / tool-result-pruner configs therefore never reached web sessions.
+# This preset carries them: bash without run_in_background, the fs tools, ask_user, and compaction with
+# the 16,384-char pruner threshold (decided 2026-10-27, see the patch). MCP tools (mcp-xerj) register on
+# the host plane and reach every preset. Copied from dsh-agent-presets/presets/standard/agent.cordis.yml;
+# selected by the `agent-presets` row in qwen.cordis.patch.yml.
+
+# The suffix adds tool-use rules from the 2026-11-04 transcript analysis (75 sessions, 637 calls): 25 of 176 real-repo
+# tool steps were a lone read-only call right after another (one full reasoning step each), and xerj was called with
+# an unsupported `knn` clause or skipped for grep on cross-repo questions.
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: |-
+      Your working directory is {{cwd}}.
+
+      Tool use:
+      - Batch independent lookups: when you need several reads, greps, globs or searches that do not depend on each other, issue them all as parallel tool calls in one step instead of one per step.
+      - Read only what you need: use grep or glob to find the place first, then read with offset and limit for large files.
+      - Code graph (mcp__cbm__ tools, when present) FIRST, then fall back. 1) list_projects once if unsure of the project name (it is the repository folder name or its absolute path). 2) Search code text: search_code (like grep -rn, but each hit comes with its function). Find a symbol or file: search_graph (name_pattern, file_pattern or query). Read one function: get_code_snippet. Callers, callees, request flows: trace_path. A big file: get_file_outline, then read only the lines you need. 3) Fall back to grep, glob or a ranged read only when the graph returns nothing, for string literals, config values, logs and non-code files, or for code edited in the last few minutes (the index refreshes 4 minutes after edits stop). Do not chain bash ls/head/wc/cat or whole-file reads over code.
+      - Cross-repo code (mcp__xerj__ tools, when present): use xerj_def to locate a symbol across all repos first; use xerj_search with a `prefix` (ax-<repo>) for discovery. Query env vars as the full expression (process.env.NAME). xerj_hybrid_search takes `semantic` clauses, never `knn`. xerj is a snapshot: for exact identifiers, a zero-hit def, or code edited since the last index, use grep.
+    prefix: >-
+      You are a coding agent powered by the {{model}} model.
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# dsh's own bash, plus a one-line "graph first" hint under code-navigation commands (grep -r, sed -n on code, ls,
+# find) while DSH_CBM=1 (plugins/dsh-plugin-fast-search/bash-graph-hint.mjs): the model navigated with bash once
+# glob/grep carried hints (2026-11-11).
+- id: tool-bash
+  name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-fast-search/bash-graph-hint.mjs
+  config:
+    enableRunInBackground: false
+
+# 400 lines per read call by default (dsh ships 2000). On 2026-11-10 one whole-file read put 71K chars (~8K tokens)
+# into a 100K-token context; at long context every token costs ~4.6 ms of prefill. The agent can still page with offset.
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+  config:
+    readLimit: 400
+
+# dsh's own glob/grep, with ripgrep skipping node_modules, dist, build, vendor and other dependency trees
+# (plugins/dsh-plugin-fast-search). Shipped glob walks everything (--no-ignore): 5.6-8.4 s per call from
+# ~/WebstormProjects (328K files), 0.23 s with the excludes (2026-11-11).
+- id: tool-fs-search
+  name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-fast-search/index.mjs
+  config:
+    sampleOverCapGlobResults: false
+
+# `compaction-basic` reads `toolResultPrune` through `ctx.get`, so the pruner shares its realm.
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    # Effectively off (2026-11-10). Pruning rewrites an old tool result, so everything after it must be prefilled
+    # again: in the 2026-11-09/10 web sessions that cost a 73.7K-token re-prefill (246 s) and a 78.4K-token one
+    # (316 s, right before compaction, which then cost another 390 s). Compaction alone now manages context.
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 1000000000
+        headChars: 4096
+        tailChars: 1024
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'

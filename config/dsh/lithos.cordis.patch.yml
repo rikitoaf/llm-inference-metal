@@ -1,0 +1,37 @@
+# dsh patch layer for BACKEND=lithos, applied after qwen.cordis.patch.yml (scripts/dsh-env.sh adds it).
+# It points the provider at lithos-metal (scripts/serve-lithos.sh) and turns the JEV plugin off.
+# A `config` key replaces a row's whole config, so the provider row is restated in full.
+
+# 1. Same provider id and model id, pointed at lithos-metal (serve-lithos.sh serves the alias).
+- id: llm-pi-ai
+  config:
+    providers:
+      llama-local:
+        displayName: lithos-metal Qwen3.8-27B GGUF + DSpark, turbo-int4 KV (local)
+        api: openai-completions
+        baseURL: http://127.0.0.1:8001/v1
+        apiKeyEnv: LLAMA_API_KEY            # placeholder; lithos has no auth unless LITHOS_METAL_API_KEY is set
+        reasoning: high
+        timeoutMs: 900000
+        streamIdleTimeoutMs: 900000
+        retryPolicy:
+          mode: normal
+          maxRetries: 1
+        compat:
+          supportsDeveloperRole: false
+          supportsStore: false
+          maxTokensField: max_tokens
+          # lithos serves with thinking off and rejects any reasoning_effort but "none": send none at all
+          thinkingFormat: openai
+          supportsReasoningEffort: false
+        models:
+          - id: qwen3.8-27b-local
+            name: Qwen3.8 27B (lithos-metal)
+            # Fallback only: scripts/dsh-env.sh writes the running server's --max-context minus the reply
+            # budget and a 4K margin into a generated copy.
+            contextWindow: 161792
+            maxTokens: 8192
+
+# 2. JEV is off on lithos (it has no /v1/decision or /v1/systemone endpoint).
+- id: jev
+  disabled: true

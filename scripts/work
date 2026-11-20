@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Ready-for-work launcher: dsh on the local Qwen with codebase-memory-mcp (CBM) connected.
+#   work [dir]                  re-index the platform repos (incremental, a few seconds), then the dsh web UI on dir
+#   work run <dir> "<task>"     the same, one task headless
+#   work index [repo...]        only re-index (default: the platform repos below)
+#   work autoindex [start|stop|status]   the idle re-index watcher (started automatically by work; 4 min idle)
+# Options via env: WORK_REPO_MAP=0 drops the platform "where to look" map from the system prompt (on by default when
+# workspace/platform-bench/repo-map/platform-map.md exists); WORK_NAV_DOCTRINE=1 adds the grep-then-range-read rules.
+# Engine flags (before the command; the server must be restarted to switch: `scripts/qwen stop` first):
+#   (none)        DSpine drafter + park lane (splash/dev-park2), the default: DSpine +7-14% tok/s at 40-160K;
+#                 park lane (the previous reply is not prefilled again) follow-up prompt -31..-44%, wall -13..-21%
+#   --no-park     DSpine without the park lane
+#   --full-verify 16 verify rows at every context (default: 8 rows from 64K, +24% tok/s at 68-103K)
+#   --old-prefill the previous prefill attention kernel (default: v2, -8..-14% prompt time at 60-100K)
+#   --compact     compact early, at ~37% of the window (DSH_SHORT_CONTEXT=1). Default: compact at the context
+#                 window minus 10K tokens (DSH_COMPACT_MARGIN), following --max-context
+#   --max-context N   cap the server's context (e.g. 128K) to leave the host memory headroom
+#   --production  splash-src with DFlash2 (the old default)
+# Everything else (server start, idle stop, status) is scripts/qwen. Manual: WORK.md.
+set -euo pipefail
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+stack_root="$(cd "$here/.." && pwd)"
+# The platform repo list is local only (workspace/ is gitignored: company names stay out of the public repo):
+# workspace/platform-bench/repos.txt, one folder name under PLATFORM_ROOT per line.
+platform_root="${PLATFORM_ROOT:-$HOME/WebstormProjects}"
+platform_repos=()
+repo_list="$stack_root/workspace/platform-bench/repos.txt"
+[[ -f "$repo_list" ]] && while read -r repo; do [[ -n "$repo" ]] && platform_repos+=("$repo"); done < "$repo_list"
+repo_map="$stack_root/workspace/platform-bench/repo-map/platform-map.md"
+
+index_repos() {
+  local targets=("$@")
+  if (( ${#targets[@]} == 0 )); then
+    for repo in ${platform_repos[@]+"${platform_repos[@]}"}; do [[ -d "$platform_root/$repo" ]] && targets+=("$platform_root/$repo"); done
+  fi
+  (( ${#targets[@]} )) && "$here/cbm-index.sh" "${targets[@]}"
+}
+
+export DSH_CBM=1
+# Keep the code graph fresh while this session runs: re-index a repo 4 min after its code was last touched
+# (scripts/cbm-autoindex.sh; WORK_AUTOINDEX=0 turns it off). The watcher exits when this process (dsh, via exec) ends.
+start_autoindex() { [[ "${WORK_AUTOINDEX:-1}" == "1" ]] && "$here/cbm-autoindex.sh" start --while-pid $$ >/dev/null; return 0; }
+[[ "${WORK_REPO_MAP:-1}" == "1" && -f "$repo_map" ]] && export DSH_REPO_MAP="$repo_map"
+[[ "${WORK_NAV_DOCTRINE:-0}" == "1" ]] && export DSH_NAV_DOCTRINE=1
+
+use_production=0; use_no_park=0
+while [[ "${1:-}" == --* ]]; do
+  case "$1" in
+    --dspine) ;;   # the default now
+    --production) use_production=1 ;;
+    --max-context) export SPLASH_MAX_CONTEXT="$2"; shift ;;
+    --park) ;;   # the default now
+    --no-park) use_no_park=1 ;;
+    --full-verify) export SPLASH_VERIFY_ROWS_LONG=16 ;;
+    --old-prefill) export SPLASH_PREFILL_ATTN_V2=0 ;;
+    --compact) export DSH_SHORT_CONTEXT=1 ;;
+    --help) set -- help; break ;;
+    *) echo "error: unknown flag $1 (see: work help)" >&2; exit 2 ;;
+  esac
+  shift
+done
+# DSpine is the default engine (config/stack.env SPLASH_ENGINE); --production returns to DFlash2.
+(( use_production )) && export SPLASH_ENGINE=production
+(( use_no_park )) && export SPLASH_PARK_LANE=0
+source "$stack_root/config/stack.env"
+# A running server keeps its engine: warn when it is not the one these flags ask for.
+running_engine=$(ps -Ao command= | sed -n 's#^\(/[^ ]*\)/build/splash serve.*#\1#p' | head -1)
+wanted_engine="${SPLASH_SRC:-$stack_root/splash/splash-src}"
+if [[ -n "$running_engine" && "$running_engine" != "$wanted_engine" ]]; then
+  echo "warning: the running server is $(basename "$running_engine"), not $(basename "$wanted_engine"); run 'scripts/qwen stop' first to switch" >&2
+fi
+
+case "${1:-}" in
+  -h|--help|help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+  index) shift; index_repos "$@"; exit ;;
+  autoindex) shift; exec "$here/cbm-autoindex.sh" "${@:-status}" ;;
+  run) index_repos || echo "warning: indexing failed; CBM answers may be stale" >&2; start_autoindex; exec "$here/qwen" "$@" ;;
+  *) index_repos || echo "warning: indexing failed; CBM answers may be stale" >&2; start_autoindex; exec "$here/qwen" "$@" ;;
+esac

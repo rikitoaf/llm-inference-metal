@@ -1,0 +1,11 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -97,7 +97,7 @@
+       }
+     }
+     if (matmuls) {
+-      auto a_slice = a.template slice<KS, Rows>(step * KS, 0);
++      auto a_slice = a.template slice<KS, Rows>(0, 0);
+       if (step & 1) operation.run(a_slice, b1, acc); else operation.run(a_slice, b0, acc);
+     }
+   }

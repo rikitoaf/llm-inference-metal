@@ -1,0 +1,285 @@
+{
+  "summary": "Find advanced techniques for a big Splash speed-up: kernels, pipelining, speculation, sessions, external state of the art; rank and adversarially check",
+  "agentCount": 9,
+  "logs": [
+    "research returned 5/5 angles"
+  ],
+  "result": {
+    "ranked": {
+      "report_path": "/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/RESEARCH-ADVANCED-2026-11-02.md",
+      "top": [
+        {
+          "rank": 1,
+          "name": "Reasoning effort xhigh -> medium, set where it takes effect (--default-reasoning-effort or chat_template_kwargs.reasoning_effort)",
+          "expected_gain": "+13-24% agent wall time (reasoning = 53% of agent time; 25-45% token cut assumed)",
+          "exact": "approximate",
+          "effort_days": 1,
+          "why": "Largest lever in the study. dsh's reasoning setting never reaches Splash (pi-ai sends no reasoning_effort, openai-completions.js:654-658), so the template defaults to xhigh with a 'consider alternatives' instruction (qwen38_gguf.jinja:58-69).",
+          "first_experiment": "No GPU: render the template with effort unset vs medium to confirm the diff. Then GPU eval: t1/t2/t3 x3 reps, medium vs xhigh, comparing wall_s, output tokens and hidden_passed. Kill on a pass-rate drop or a reasoning-token cut under 15%."
+        },
+        {
+          "rank": 2,
+          "name": "Copy branches past depth 7 inside the 16-node best-first heap (Phase A: host root copy chain aligned with DFlash nodes)",
+          "expected_gain": "+9.0% tokens/cycle simulated at T=0 (4.449->4.850), about +8.5% decode, about +5% agent; Phase A +5.4% tokens/cycle",
+          "exact": "exact (rows independent of siblings; confirm by greedy digest)",
+          "effort_days": 4,
+          "why": "The depth-7 cap binds in 20% of T=0 agent cycles and 49% of T=0.6 code cycles. The result is simulated within the 16-row budget, not guessed. Plumbing includes the 8-row DFlashDraft::addContextCommit (DFlashDraft.cpp:327-328), the accept caps (sampling.metal:1662, Runtime.mm:1889) and 8 more uniforms.",
+          "first_experiment": "One GPU run: a T=0.6 SPLASH_DRAFT_DUMP over 20-50 dsh steps. Then offline sim.py/aligned.py to tune c and n. Kill below +3% at T=0.6. The same dump also feeds E4's threshold and the tau_tree check."
+        },
+        {
+          "rank": 3,
+          "name": "Re-tune staged K splits for one-lane decode (split-policy tier plus per-format overrides)",
+          "expected_gain": "-0.66 ms already measured, -1 to -2.5 ms per cycle with per-format tiers: +1-3% decode, +0.6-1.8% agent",
+          "exact": "exact-math",
+          "effort_days": 0.75,
+          "why": "It was rejected only for its B4 cost, and decode is now capped at one lane. kernel-ab-diag shows 7-10% faster splits for down projections and QKV (ops/LinearGguf.cpp:81 kStagedTiers).",
+          "first_experiment": "GPU, minutes: gguf-projection-benchmark split sweep for all verify shapes at L1, then a decode-profile A-B-B-A. Kill if the gain is under 0.5 ms per cycle."
+        },
+        {
+          "rank": 4,
+          "name": "Runaway-reasoning guard (force Qwen's </think> early-stop sequence at about 10-12K reasoning tokens, or stop on line repetition)",
+          "expected_gain": "+4-8% agent time on sessions where it fires (4 cap steps = 11.4% of corpus agent time, with no output)",
+          "exact": "approximate (bit-identical below the budget)",
+          "effort_days": 2,
+          "why": "This is the worst single waste in the session logs, and steps below the budget are untouched.",
+          "first_experiment": "No GPU: replay the 4 runaway transcripts and all normal reasoning blocks through a repetition detector to choose B and count false positives. GPU only to check that the forced close yields a valid tool call."
+        },
+        {
+          "rank": 5,
+          "name": "Cut IQ dequant instructions: E3 lean bit-identical grid decode (magic-number bytes, sign folded into the fp32 scale, sign index decoded once per group), then E5 integer-operand stage with a per-superblock scale chain",
+          "expected_gain": "E3: 4-5 ms per cycle, +5-6% decode. E5: 5-8 ms, +6-10% decode, ceiling 8-9 ms (Q4_K-level dequant on 48 ms of grid-format projections). About +3-6% agent",
+          "exact": "E3 exact; E5 exact-math",
+          "effort_days": 5.5,
+          "why": "Dequant and MMA costs add (kernel-ab-diag: 0.2254 = 0.113 matmul + 0.093 dequant + loads), so only fewer ALU ops per weight pay. Grid decode is about 9-11 ops per weight vs Q4_K's about 4-5. The matmul half already runs at the matrix-unit FP16 peak (25 TFLOP/s).",
+          "first_experiment": "GPU microbenchmark: implement E3 for IQ3_S/IQ3_XXS in a dev copy, check bitwise stage equality, and time gguf-projection-benchmark 17408x5120. Kill E3 if IQ3_XXS is not under 0.21 ms (now 0.225). Then prototype E5 on IQ3_S; kill if not under 0.19 ms or if the fp64 test fails."
+        },
+        {
+          "rank": 6,
+          "name": "Per-cycle verify row count: skip the second 8-row attention tile at long context when nodes 8-15 are improbable",
+          "expected_gain": "Gated simulation: +2.4% at 64K, +5.4% at 96K, +8.9% at 128K; about +3-4% decode over long sessions, about +2% agent",
+          "exact": "exact (smaller tree, same accept rule; confirm by digest)",
+          "effort_days": 2,
+          "why": "Real sessions run at 30-120K context, where 25-45 ms per cycle is context-dependent attention. It is the only exact idea aimed there; the 16 and 8x2 tiles lost.",
+          "first_experiment": "GPU: decode-profile at 32K/64K/96K with the second tile forced to early-exit. Kill if 64K does not drop by at least 5 ms from 114.8. Then set theta(L) with gate.py on the T=0.6 dump."
+        },
+        {
+          "rank": 7,
+          "name": "Finish the park lane (oracle test, then ship under the exact-math rule if it is a near-tie)",
+          "expected_gain": "+3.5% agent time (own-output re-prefill = 38-44% of per-step prefill tokens; measured prompt time -24% over 6 turns)",
+          "exact": "approximate (pending oracle; exact-math if a near-tie)",
+          "effort_days": 2,
+          "why": "The code is done and adoption works (4/5, 0 mismatches). It is blocked only on deciding whether the char-127 divergence is a near-tie.",
+          "first_experiment": "GPU: same prompt, park->adopt vs cold prefill; dump the logits at the first differing token. A top-2 margin under about 0.05 means a near-tie."
+        },
+        {
+          "rank": 8,
+          "name": "Matrix-unit probes: int8 / half x int8 / e4m3 matmul2d rate, relaxed_precision=true, and MMA-vs-ALU concurrency (gates W8A8, int8-B stage and producer/consumer specialization)",
+          "expected_gain": "If INT8 runs at about 2x FP16 at 16 rows: W8A8 gives +35-40% decode (approximate); int8-B stage about +10%; specialization up to +30% if MMA and ALU overlap. Low prior (0.15-0.25)",
+          "exact": "probe itself n/a; W8A8 approximate, int8-B exact-math, specialization exact",
+          "effort_days": 1,
+          "why": "This is the only path past the FP16 matrix-unit floor of about 34 ms. External data (tzakharko INT8 about 2x per core; Draw Things fused int8 1.61-1.87x on M5) makes it worth one day. MLX uses relaxed_precision=true; Splash uses false.",
+          "first_experiment": "GPU microbenchmark, 1 day: time a nodeq-style 16x32x32 matmul2d with half, int8 and e4m3 operands, with and without relaxed_precision, plus a concurrent dispatch of matmul-only and dequant-only kernels (max vs sum). Kill W8A8 if int8 is under 1.3x half; kill specialization if the concurrent time is about the sum."
+        }
+      ],
+      "summary": "I merged the five reports into /Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/RESEARCH-ADVANCED-2026-11-02.md. It replaces the old copy, which was byte-identical to the backup RESEARCH-ADVANCED-2026-11-02.run1.md. Nothing ran on the GPU.\n\n**Two corrections to the time budget:**\n- The GPU idles about 0.63 ms between cycles, not 2-3 ms. Angle 2 measured this over about 15,000 cycles.\n- Angle 1's estimate of 12-16 ms saved by a faster IQ dequant was too high. It assumed IQ formats are 90% of verify time; IQ3/IQ2 are 72% of verify bytes, and IQ4_XS is not a grid format. Taking their dequant to Q4_K's measured cost saves at most 8-9 ms per cycle, about +10% decode.\n\n**What is still movable inside a cycle:** the matmul half of each projection already runs at the M5 matrix units' FP16 peak (2.85 GFLOP in 0.113 ms = 25 TFLOP/s). So the 41 ms bandwidth floor is not reachable this way. What can still shrink is about 19-23 ms of dequant, plus a possible int8 matmul rate that nobody has measured on this chip.\n\n**At the agent level, reasoning tokens matter most.** They are 53% of agent time, and the template runs at xhigh effort because dsh's reasoning setting never reaches Splash.\n\n**Ranking:**\n1. Reasoning effort xhigh to medium: about +13-24% agent time, but approximate, so it needs the eval.\n2. Copy branches past depth 7 inside the 16-node tree: +9% tokens/cycle in angle 3's simulation, about +5% agent time, exact.\n3. Re-tune the K splits now that decode runs one lane: +1-3% decode.\n4. Runaway-reasoning guard: removes the steps that hit 16K tokens and returned nothing.\n5. Cut instructions in the IQ dequant: a bit-identical lean decode first, then integer staging with the scale applied once per 256-weight superblock (+5-10% decode).\n6. Skip the second 8-row attention tile per cycle at long context.\n7. Finish the park lane, which is blocked on one oracle test.\n8. A one-day microbenchmark of int8 matmul rates, `relaxed_precision` and matmul/dequant overlap, which decides three high-variance kernel ideas.\n\n**Rejected or deferred:** pre-encoding the next cycle and indirect command buffers (capped at the 0.63 ms gap), folding the GDN commit into the next verify (net loss), folding norms into projections, llama.cpp's few-row simdgroup MMA (slower on M5), trees above 16 nodes or fixed tree shapes, multi-draft acceptance, and the asf0 block-16 drafter. The Weaver tree adapter is deferred: it needs about 15 days plus rented GPUs to generate training data.\n\n**Open gap for the next round:** at the 30-120K contexts dsh actually runs, 25-45 ms of every cycle is context-dependent verify attention. Only the attention-tile skip (rank 6) touches it, and it deserves its own study.\n\nThe report also gives the cheapest first experiment for each top idea and marks which ones need the GPU."
+    },
+    "skeptics": [
+      {
+        "name": "Reasoning effort xhigh -> medium via --default-reasoning-effort / chat_template_kwargs.reasoning_effort",
+        "refuted": true,
+        "realistic_gain": "0 to +20% agent wall time, most likely +5-12%. None of it is measured. Arithmetic: 0.53 x (token cut). A 10-25% cut gives 5-13%. The proposed 25-45% cut, which would give 13-24%, is assumed with nothing behind it. This is also an approximate change: it alters model behaviour and quality, not engine speed.",
+        "flaws": "1) The core number is an assumption. RESEARCH-ADVANCED-2026-11-02.md:216 calls the 25-45% reasoning-token cut \"assumed\". No measurement in SPEED_LOG, eval/results or the 25 session logs compares medium with xhigh. The 13-24% is just 0.53 x 25-45%. The 0.53 share is measured; the cut is not.\n2) The only change on the prompt side is one sentence. In the served template (qwen38_gguf.jinja:58-69, confirmed in the cached unsloth Qwen3.8-27B-UD-IQ3_XXS.gguf metadata), medium injects nothing. xhigh injects one sentence: \"validate key assumptions, consider plausible alternatives...\". Only low adds an explicit \"keep thinking brief\" instruction. So medium vs xhigh differs by removing one system-prompt sentence; the model gets no \"be shorter\" instruction and no token budget (DEVELOPMENT.md:236-239: effort is passed \"not as a token budget\"). If Qwen3.8 was trained with effort conditioning, the cut could be large, but how large is unknown. With weak conditioning it could be single digits.\n3) Runaway steps are a separate problem. 11.4% of agent time is 4 steps stuck in a loop at 16,384 tokens (365 unique lines out of 907). These are degenerate repetition, and dropping one instruction sentence is not shown to stop them. That is the A2 guard's job (a budget or repetition stop). Much of the \"reasoning = 53%\" pool that would shrink most is therefore not clearly reachable through A1.\n4) It is not fixing a dropped setting so much as choosing a new behaviour. dsh's configured effort is `reasoning: high` (config/dsh/qwen.cordis.patch.yml:15, reasoningEfforts off/high), and the template aliases high to xhigh (jinja:60-62). Even if pi-ai forwarded it, the template would still get xhigh. Medium is a deliberate quality-for-speed trade, not a bug fix.\n5) The eval gate is weak. t1/t2/t3 x 3 reps is 9 runs per arm. t2-semver is already 0/13, so it gives no signal on a quality drop, which leaves about 6 informative runs. \"Drop more than one task-rep\" cannot separate a 10-15% pass-rate loss from noise. t4-t6 exist (eval/tasks) and should be included.\n6) Second-order gains, such as shorter contexts making cycles cheaper or less compaction, are real but small: about 4-6% per the run1 estimate, and only if the token cut happens.\nWhat holds up: the plumbing claim is correct, so the 1-day effort is right. pi-ai's qwen-chat-template branch sends only enable_thinking and preserve_thinking (harness/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js:654-658). SPLASH_DEFAULT_REASONING_EFFORT / --default-reasoning-effort (server/serve_options.py:283, frontend.py:783-785) does reach the template as reasoning_effort=medium even when chat_template_kwargs sets enable_thinking=true (chat_templates.py:108-117). It can be passed through SPLASH_EXTRA_ARGS (scripts/serve-splash.sh:55). The engine stays exact: the same math, only a different prompt.",
+        "evidence": "Template: splash/splash-src/dev/tests/fixtures/chat_templates/qwen38_gguf.jinja:58-69 (default('xhigh'); high->xhigh; medium = no instruction). The cached GGUF contains the 'set to xhigh' and 'set to low' strings and default('xhigh'), with no medium text. pi-ai: harness/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js:654-658. Splash plumbing: server/frontend.py:783-790, server/chat_templates.py:94-121, DEVELOPMENT.md:231-255, serve_options.py:283. dsh config: config/dsh/qwen.cordis.patch.yml:15,25,31-33 (effort 'high'). Time shares: RESEARCH-ADVANCED-2026-11-02.md:20 (reasoning 52.9%), :76 and :166 (4 runaway steps = 11.4%, 1,657 s, 365/907 unique lines), :216 (the 25-45% cut is assumed). There is no medium-vs-xhigh measurement in splash/SPEED_LOG.md or eval/results (only ab-run1, smoke, tree16-check). Eval tasks: eval/tasks t1-t6."
+      },
+      {
+        "name": "Copy branches past depth 7 inside the 16-node heap (E1; Phase A host root copy chain aligned with DFlash nodes)",
+        "refuted": true,
+        "realistic_gain": "Tokens/cycle on the 6-prompt bench: about +3% to +6% for the full heap version (claimed +9.0%) and about +2% to +4% for Phase A (claimed +5.4%). Decode tok/s tracks that within about 0.5 points, because the 16-row verify cost does not change. On the real dsh agent mix (mostly new reasoning, T=0.6): about +1% to +3% of agent wall time, not +5%. That matches SPEED_PLAN item 5's own corrected estimate of −1.5% to −3% wall time (SPEED_PLAN.md:132). The kill threshold in the first experiment (+3% tokens/cycle at T=0.6) is right, and passing it is likely only on copy-heavy steps.",
+        "flaws": "1) The estimator inflates the headline. sim.py and aligned.py (in the scratchpad) score every cycle from the BASELINE trajectory's start points and take the arithmetic mean of accepted+1. Long copy accepts skip later start points in copy regions, so a real run spends fewer cycles there. The arithmetic mean therefore over-weights exactly the cycles that gain. I re-scored the per-cycle data in percyc2.pkl for the sister ext7 policy (claimed +7.3% arithmetic), with each window's baseline tokens divided by its new mean rate: window 100 gives +5.7%, window 20 +4.3%, window 5 +2.9%, per prompt +6.6%. Only 213 of 2,427 cycles improve and 71 get worse, so the gain is concentrated in few cycles and very sensitive to this weighting. Expect the real figure to be about 0.5-0.8x the arithmetic one.\n2) The configs were tuned in-sample. +9.0% is the best of 27 configs (policy x c x n gate) and Phase A's +5.4% is the best of 18 (K, c, gate, plus a hand-set 0.7 discount for later continuations), each picked on the same 2,438 cycles from only 6 requests. No holdout was used.\n3) The corpus is not the agent mix. tree_collect.py has 6 synthetic single-turn prompts. Three of them are built to copy: 'edit' pastes semver.py and asks for the whole file back, 'refactor' asks for the full file back, and 'tool' asks for a unified diff. Those three carry nearly all of the gain (tool +16.6%, edit +11.2%, refactor +11.0%). The other three gain +2.0% combined (code +4.0%, reason +1.6%, explain +0.6%). SPEED_LOG.md:195-201 (20 real dsh sessions) says the agent writes mostly new reasoning: a suffix match predicts 29% of tokens, and a copy extension after DFlash's 7 is worth +0-4%.\n4) T=0.6, the real operating point, is not measured. The 48.6% capped-cycle figure for T=0.6 code is quoted as upside, but at T=0.6 with top_k 20 / top_p 0.95 a copied token is accepted only when the sampled draw matches it. All simulated gains are greedy.\n5) The effort is underestimated for the headline version. Its policy hangs copy chains under up to 15 DFlash nodes. Those nodes exist only on the GPU, in the same command buffer, so the version needs a GPU n-gram index plus a lookup between the drafter and draft_select_tree. That index has to be maintained incrementally over contexts of 100K+ tokens. The alternative, a host readback mid-cycle, breaks the one-command-in-flight pipeline. Neither fits in 4 days. Only Phase A (a root chain from tokens already committed, merged on the GPU) is host-feasible, and it is the smaller number.\n6) Plumbing needed for depth 15: DFlashDraft.cpp:327-328 commits only lanes*draftQueryRows (8) rows, and that must become 16 or the drafter loses context. accept_tree_lane needs uncapping (sampling.metal:1662). The host checks in Runtime.mm that retained <= kDecodeRows and accepted <= kDraftProposalTokens need widening. RoPE, gather and restore, and verify_gdn_commit replay must handle path rows at depths 8-15.\n7) A T>0 exactness hazard. Sampling.h:10-24 lays out the uniforms as INITIAL(1) + PROPOSALS(7) + ACCEPTANCE(7) + CORRECTION(1). The plan reuses PROPOSALS and INITIAL for depths 8-15. That is exact only if INITIAL is never drawn in the same cycle's uniform block, for example the first decode cycle after prefill. If it is, two draws share one uniform and the sampled distribution changes. This needs checking, or SPLASH_SAMPLING_UNIFORMS should grow by 8, which is an ABI change.\n8) Exactness is otherwise fine. The copy nodes are deterministic functions of committed context, and acceptance per depth uniform is the same rule the 16-node tree already uses. Greedy stays the target's argmax, subject to the same summation-order caveat the tree already accepted.",
+        "evidence": "- The headline sim is RESEARCH-ADVANCED-2026-11-02.md:141-144 (4.449 to 4.850; Phase A 4.689). The sister ext7 result is RESEARCH-ADVANCED-2026-11-02.run1.md:97-100 (4.450 to 4.777).\n- Sim code: /private/tmp/claude-501/-Users-abdul-rakib-agentMania-dsh-qwen-jev/2995df64-4b21-4d90-8cfb-0d7faba3be1e/scratchpad/sim.py builds 27 configs and reports the best. The 'any' policy attaches copy lookups under the top 15 DFlash nodes. Per cycle it scores a baseline start point and the sum of accepted+1 over the baseline cycle count. aligned.py builds 18 configs.\n- The corpus prompts are in splash/tools/tree_collect.py:14-31.\n- My re-scoring script is /private/tmp/claude-501/-Users-abdul-rakib-agentMania-dsh-qwen-jev/2995df64-4b21-4d90-8cfb-0d7faba3be1e/scratchpad/harm.py, run on percyc2.pkl. I could not re-run sim.py itself because the tokenizers module is not installed.\n\n  | Measure | Result |\n  |---|---|\n  | Arithmetic mean | +7.33% |\n  | Window 100 | +5.73% |\n  | Window 20 | +4.34% |\n  | Window 5 | +2.89% |\n  | Per prompt | +6.62% |\n  | Non-copy prompts (code, reason, explain) | +2.04% |\n  | Cycles improved / worse | 213 / 71 of 2,427 |\n\n  Per prompt: code +4.0%, reason +1.6%, edit +11.2%, refactor +11.0%, explain +0.6%, tool +16.6%.\n- Prior real-agent measurement is SPEED_LOG.md:195-201: copy extension +0-4%, \"agent writes mostly new reasoning\". The plan's own corrected wall-time estimate is SPEED_PLAN.md:132 (−1.5% to −3%; needs 8 more uniforms and a fix to the accepted > 7 check).\n- The uniform layout is in splash-src Sampling.h, lines 10-24 of the excerpt read. The draft commit is capped at draftQueryRows in DFlashDraft.cpp:327-328 (comment: \"A step keeps at most a draft block's rows\"). The host retained and accepted checks are in Runtime.mm near 1880-1890.\n- 16 rows cost the same as 8 per projection (SPEED_LOG kernel A/B: 0.225 ms either way), so the verify cost really does not change. That part of the claim holds."
+      },
+      {
+        "name": "Re-tune staged K splits for one-lane decode (split-policy tier plus per-format overrides)",
+        "refuted": true,
+        "realistic_gain": "0.6 to 1.0 ms per cycle out of about 84.5 ms: +0.7 to 1.2% decode, about +0.5 to 1% agent tok/s. The hard ceiling is 0.97 ms, the gap between the current policy and the fastest split of every shape at 16 rows. Adding per-format tiers on top of the staged split-policy patch can win at most about 0.3 ms more. The claimed upper range of 1 to 2.5 ms is not possible. The idea is still worth a cheap A/B because the patch is already staged and the decode lane width is fixed at compile time.",
+        "flaws": "1) The claimed upper bound is beyond what any split choice can save. The logged sweep (logs/speed/round-20261021-0121/split-policy.txt, the \"27B decode step\" table weighted by the dispatches per step) gives, at L2: current 49.199 ms, split-policy 48.534 ms (-0.665), fastest split per shape 48.229 ms (-0.970). L2 is 16 rows, the shape a one-lane verify runs since the 16-node tree. Even a perfect per-format, per-shape oracle saves at most 0.97 ms, so \"-1 to -2.5 ms\" is refuted. At L1 (8 rows, the old shape) the oracle bound is 1.37 ms, and that shape no longer runs.\n2) The QKV half of the \"why\" is wrong. split_policy_check.sh:17-19 says the 27B never dispatches 10240x5120 (or 6144x5120) alone: they run inside the fused GDN input (16384x5120). The fused input's fastest split is S1, the current choice, at L1 and L2 for both format combinations, so the \"7-10% faster QKV\" gain does not exist in this model. Of the shapes that actually run, only FFN-down shows a gain. For FFN-down the oracle saves about 0.013-0.025 ms per dispatch at L2, over 51 dispatches (15 iq3xxs, 20 iq3s, 8 iq4xs, 7 iq2s, 1 q4k). The attention input with q2k+iq3s+q4k gains 11% at S2 (about 0.02 ms x 3 dispatches = 0.06 ms).\n3) The \"-0.66 ms already measured\" is the B1 (8-row) decode-profile delta from before the tree (m16 84.63 vs both 83.97). The right comparison now is B2 (16 rows): m16 88.94 vs both 88.09, -0.85 ms (SPEED_LOG.md:325-330). That is a single decode-profile median, and the 0.85 ms sits close to the benchmark oracle bound, so per-format overrides have very little room left (about 0.1-0.3 ms). The visible extra is the IQ4_XS down fix: S8 instead of S4 is 0.030 ms x 8 = 0.24 ms at L2, plus about 0.06 ms for the attention input.\n4) The benchmark is DRAM-cold and isolated, and every shape was measured once (the plan itself says \"single run, needs confirming\"). Defender ran at 12-25% during the cases, and inside the pipeline the gains shrink (benchmark -1.35% of about 49 ms predicts -0.66; decode-profile showed -0.85, within noise).\n5) Exactness: the decode width is fixed at 1u at compile time (runtime/metal/abi/ExecutionGeometry.h:13), so a fixed tier cannot make a request's sums depend on what is batched with it. The old B4 objection is gone. However, changing the K split reorders the fp32 partial sums. The result is deterministic and exact model math, but greedy output will not be bit-identical to current production: near-tie tokens can flip, as with the park-lane divergence. Correctness must be judged by the fp64-reference gguf-projection test, not by text identity with today's output. If SPLASH_MAXIMUM_DECODE_WIDTH is ever raised, the B3/B4 regressions come back: gdn-z/qkv +11-13%, IQ4_XS down +5%, decode-profile +3.3% at B4.\n6) Minor costs: the tuning-workloads, linear-tuning and linear-plan tests already fail on production, so a tier change gets no regression signal from them. A per-format tier also needs the format inside decodeSplits(), which today depends only on n, k and cores (LinearGguf.cpp:49-57). That is more plumbing than a table edit, though still under a day.",
+        "evidence": "The current policy is kStagedTiers = {{6, 512}} (splash/splash-src/runtime/ops/LinearGguf.cpp:81). decodeSplits ignores row count and format (LinearGguf.cpp:39-57). The staged patch is splash/staged/speed/split-policy.patch, which adds {12, 2048}. The sweep log is logs/speed/round-20261021-0121/split-policy.txt. Its 27B-weighted step totals at L2 are cur 49.199, new 48.534, fastest 48.229 ms; at L1 they are cur 51.866, new 50.912, fastest 50.497 ms. Per-shape at L2: ffn-down iq3xxs S2 0.2613 to S4 0.2361; iq3s 0.2624 to 0.2495; iq4xs S2 0.2635, S4 0.2769 (slower), S8 0.2472; gdn-input-fused S1 is fastest; attn-input-fused q2k+iq3s+q4k S1 0.1929 vs S2 0.1731. The dispatch weights are at splash/staged/speed/split_policy_check.sh:69-77, and the note that QKV and z run only inside the fused input is at :17-19. The decode-profile table at SPEED_LOG.md:325-330 gives B1 m16 84.63 vs both 83.97 and B2 m16 88.94 vs both 88.09. The decision note at SPEED_LOG.md:346-357 says the plan was not applied because of B4 and that split counts cannot follow lane count. The decode width is fixed at compile time at splash/splash-src/runtime/metal/abi/ExecutionGeometry.h:13 (#define SPLASH_MAXIMUM_DECODE_WIDTH 1u). The 16 verify rows for one lane, run as two tiles on the same m16 kernels, are described at SPEED_LOG.md:89-98. Current cycle is 84.5-84.7 ms (SPEED_LOG.md 2026-11-01)."
+      }
+    ]
+  },
+  "workflowProgress": [
+    {
+      "type": "workflow_phase",
+      "index": 1,
+      "title": "Research"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 2,
+      "title": "Rank"
+    },
+    {
+      "type": "workflow_phase",
+      "index": 3,
+      "title": "Skeptics"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 1,
+      "label": "research:kernels",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "ad472e64f2ae7a0aa",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111816,
+      "lastProgressAt": 1793565111816,
+      "cached": true,
+      "resultPreview": "{\"angle\":\"GGUF projection kernels on M5 (staged dequant-to-threadgroup + MPP matmul2d): where the 16-row verify spends its time, and exact ways to cut it\",\"findings\":\"## What the code and the logs show\\n\\n**1. On M5 the hot kernel is the staged tile, not `linear_gguf_sgmatrix.metal`.**\\n- `linear_gguf_sgmatrix.metal` is the Apple9 register path.\\n- M5 runs `gguf_decode<F,16,…>` (`kernels/shared/gg…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 2,
+      "label": "research:pipeline",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a116edb057698b2c8",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111817,
+      "lastProgressAt": 1793565111817,
+      "cached": true,
+      "resultPreview": "{\"angle\":\"Decode cycle pipeline and host overhead: GPU idle time between cycles, dispatch boundaries, cross-cycle overlap, and CPU round trips in acceptance (Runtime.mm, MetalBackend.mm, CommandGraph.hpp, Engine.cpp, QwenState.cpp)\",\"findings\":\"## Correction first: the GPU idles about 0.63 ms between cycles, not 2-3 ms\\n\\nI re-measured this from the existing step logs (6 runs, about 15,000 one-lan…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 3,
+      "label": "research:speculation",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a312d59c694e4aab9",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111817,
+      "lastProgressAt": 1793565111817,
+      "cached": true,
+      "resultPreview": "{\"angle\":\"Tokens per cycle: better use of the 16 verify rows (copy branches past depth 7, a per-cycle row count, a tree builder matched to the temperature, extra draft depth), checked against the existing draft dump and step logs with new CPU simulations\",\"findings\":\"## What I checked\\n**Code read:**\\n- `runtime/metal/kernels/decode/sampling.metal`: `draft_select_tree` :1392-1487, `accept_tree_lan…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 4,
+      "label": "research:sessions",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "acb7bedffc75a32da",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111817,
+      "lastProgressAt": 1793565111817,
+      "cached": true,
+      "resultPreview": "{\"angle\":\"Agent wall time end to end (what the user feels): how a dsh session's model time splits between prefill, reasoning decode, answer/tool-call decode, compaction and idle, and the biggest levers on that time.\",\"findings\":\"## Method\\nI read every dsh session log (25 sessions, `dsh-home/sessions/*/session.v3.jsonl.zstd`). Each `assistant/message` carries `usage` (inputTokens = **uncached** pr…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 5,
+      "label": "research:external",
+      "phaseIndex": 1,
+      "phaseTitle": "Research",
+      "agentId": "a9005c2f964ff5050",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111817,
+      "lastProgressAt": 1793565111817,
+      "cached": true,
+      "resultPreview": "{\"angle\":\"External state of the art (2025-2026): MLX, llama.cpp Metal, the M5 Neural Accelerator roofline, and published speculative decoding (DFlash/DDTree, Weaver, Graft, SuffixDecoding, Token Recycling, EAGLE-3, lookahead, PLD/REST, Sequoia/SpecInfer), each mapped onto Splash on a 24 GB M5 Pro with hybrid GDN and attention layers.\",\"findings\":\"## 1. What the M5 hardware allows, and why the 41 m…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 6,
+      "label": "rank",
+      "phaseIndex": 2,
+      "phaseTitle": "Rank",
+      "agentId": "a744c7897145848aa",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111817,
+      "lastProgressAt": 1793565111817,
+      "cached": true,
+      "resultPreview": "{\"report_path\":\"/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/RESEARCH-ADVANCED-2026-11-02.md\",\"top\":[{\"rank\":1,\"name\":\"Reasoning effort xhigh -> medium, set where it takes effect (--default-reasoning-effort or chat_template_kwargs.reasoning_effort)\",\"expected_gain\":\"+13-24% agent wall time (reasoning = 53% of agent time; 25-45% token cut assumed)\",\"exact\":\"approximate\",\"effort_days\":1,\"why\":\"…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 7,
+      "label": "skeptic:Reasoning effort xhigh -> medium, set where it takes",
+      "phaseIndex": 3,
+      "phaseTitle": "Skeptics",
+      "agentId": "af6abc112ccdcc85b",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111834,
+      "queuedAt": 1793565111823,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Reasoning effort xhigh -> medium via --default-reasoning-ef…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…",
+      "promptFramed": true,
+      "lastProgressAt": 1793565257282,
+      "tokens": 62965,
+      "toolCalls": 11,
+      "durationMs": 145448,
+      "resultPreview": "{\"name\":\"Reasoning effort xhigh -> medium via --default-reasoning-effort / chat_template_kwargs.reasoning_effort\",\"refuted\":true,\"realistic_gain\":\"0 to +20% agent wall time, most likely +5-12%. None of it is measured. Arithmetic: 0.53 x (token cut). A 10-25% cut gives 5-13%. The proposed 25-45% cut, which would give 13-24%, is assumed with nothing behind it. This is also an approximate change: it …"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 8,
+      "label": "skeptic:Copy branches past depth 7 inside the 16-node best-f",
+      "phaseIndex": 3,
+      "phaseTitle": "Skeptics",
+      "agentId": "ae6e72602f1160101",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111834,
+      "queuedAt": 1793565111823,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Copy branches past depth 7 inside the 16-node heap (E1; Pha…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…",
+      "promptFramed": true,
+      "lastProgressAt": 1793565369386,
+      "tokens": 86712,
+      "toolCalls": 15,
+      "durationMs": 255100,
+      "resultPreview": "{\"name\":\"Copy branches past depth 7 inside the 16-node heap (E1; Phase A host root copy chain aligned with DFlash nodes)\",\"refuted\":true,\"realistic_gain\":\"Tokens/cycle on the 6-prompt bench: about +3% to +6% for the full heap version (claimed +9.0%) and about +2% to +4% for Phase A (claimed +5.4%). Decode tok/s tracks that within about 0.5 points, because the 16-row verify cost does not change. On…"
+    },
+    {
+      "type": "workflow_agent",
+      "index": 9,
+      "label": "skeptic:Re-tune staged K splits for one-lane decode (split-p",
+      "phaseIndex": 3,
+      "phaseTitle": "Skeptics",
+      "agentId": "a1507e85823f5456b",
+      "model": "claude-opus-5-5",
+      "state": "done",
+      "startedAt": 1793565111834,
+      "queuedAt": 1793565111823,
+      "attempt": 1,
+      "lastToolName": "StructuredOutput",
+      "lastToolSummary": "Re-tune staged K splits for one-lane decode (split-policy t…",
+      "promptPreview": "Context (read before anything else): /Users/abdul.rakib/agentMania/dsh-qwen-jev is a local LLM stack. Splash (/Users/abdul.rakib/agentMania/dsh-qwen-jev/splash/splash-src, C++/Objective-C++ with\nMetal kernels under runtime/metal/kernels, host runtime under runtime/) serves Qwen3.8-27B (hybrid: 48 Gated-DeltaNet\nlayers + 16 full-attention layers, 64 total) as GGUF UD-IQ3_XXS (mixed IQ3_S/IQ3_XXS/IQ…",
+      "promptFramed": true,
+      "lastProgressAt": 1793565204142,
+      "tokens": 77781,
+      "toolCalls": 9,
+      "durationMs": 89855,
+      "resultPreview": "{\"name\":\"Re-tune staged K splits for one-lane decode (split-policy tier plus per-format overrides)\",\"refuted\":true,\"realistic_gain\":\"0.6 to 1.0 ms per cycle out of about 84.5 ms: +0.7 to 1.2% decode, about +0.5 to 1% agent tok/s. The hard ceiling is 0.97 ms, the gap between the current policy and the fastest split of every shape at 16 rows. Adding per-format tiers on top of the staged split-policy…"
+    }
+  ],
+  "totalTokens": 227458,
+  "totalToolCalls": 35
+}

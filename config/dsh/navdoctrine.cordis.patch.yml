@@ -1,0 +1,14 @@
+# Navigation doctrine (opt-in: DSH_NAV_DOCTRINE=1, applied by scripts/dsh-env.sh). Off by default.
+# One more cached system-prompt section (plugins/dsh-plugin-guidelines/rules/navigation.md, ~0.9K chars): grep before
+# read, read line ranges, no re-reads, batch independent lookups, keep out of node_modules, stop when answerable.
+# Headless sessions had none of the lean preset's tool-use rules (config/dsh/presets/lean is web only), and 89% of
+# tool-result characters are code navigation (splash/tools/session_tool_share.py). Measured on the platform benchmark
+# (workspace/platform-bench, local only); results in splash/SPEED_LOG.md.
+- insert:
+    - id: guidelines-navigation
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-guidelines/index.mjs
+      config:
+        rules: [navigation]
+        sectionOrder: 10160
+        isResumeNoticeEnabled: false
+        areCommandsEnabled: false

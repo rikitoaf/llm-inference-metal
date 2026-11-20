@@ -1,0 +1,4 @@
+# The runaway-reply guard is in production (qwen.cordis.patch.yml section 4b). This layer only re-enables it on top of a
+# patch that turned it off; config/dsh/norunaway.cordis.patch.yml turns it off for A/B runs (eval cond "noguard").
+- id: runaway
+  disabled: false

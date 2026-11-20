@@ -1,0 +1,11 @@
+# Short-context mode (opt-in: DSH_SHORT_CONTEXT=1, applied by scripts/dsh-env.sh). Off by default.
+# Decode slows with context: ~61 tok/s below 32K, ~37 at 64K, ~31 past 96K (splash/ANALYSIS.md section 5). dsh's
+# compaction ships at 80% of the 129,520-token window (~104K) keeping 16% (~21K), so long sessions sawtooth between
+# ~21K and ~104K. Compacting at ~48K and keeping 12K holds them in the fast band, at the price of more compactions
+# (each one a summary request, thinking off via purpose-effort, plus a cold prefill of summary + retained tail).
+# This is the no-new-code control arm from the billion-context evaluation (splash/EXTERNAL-2026-11-09.md section 2):
+# measure it on a long session before anything heavier. Not yet measured.
+- id: compaction-basic
+  config:
+    thresholdRatio: 0.37
+    retainTokens: 12000

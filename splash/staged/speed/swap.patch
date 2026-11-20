@@ -1,0 +1,99 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -16,29 +16,42 @@
+ constant constexpr uint kStagedSimdgroupStage = 2 * GGUF_STAGED_COLUMNS * GGUF_STAGED_STEP;
+ constant constexpr uint kStagedStages = GGUF_TILE_COLUMNS / GGUF_STAGED_COLUMNS * kStagedSimdgroupStage;
+ 
++// Decode tiles run matmul2d with the swapped operands: the staged weight columns are its M and the rows its N, the
++// destination Cols x Rows. The prefill tile keeps rows as M.
++#ifndef GGUF_DECODE_SWAP
++#define GGUF_DECODE_SWAP 1
++#endif
++
+ // The destination of a Rows-row tile, zeroed by the caller: returning an initialized cooperative tensor loses its
+ // initial values on Apple9 in runtime-format kernels (also with shader validation).
+-template <ushort Rows, ushort Cols, ushort KS>
++template <ushort Rows, ushort Cols, ushort KS, bool Swap = GGUF_DECODE_SWAP>
+ inline auto staged_accumulator(device bfloat *input, uint input_size, threadgroup half *stage) {
+   auto a = tensor(input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
+-  constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+-  matmul2d<descriptor, execution_simdgroups<1>> operation;
+   auto a0 = a.template slice<KS, Rows>(0, 0);
+   tensor<threadgroup half, dextents<int, 2>, tensor_inline> bt0(stage, dextents<int, 2>{KS, Cols}, array<int, 2>{1, KS});
+   auto b0 = bt0.slice<KS, Cols>(0, 0);
+-  return operation.template get_destination_cooperative_tensor<decltype(a0), decltype(b0), float>();
++  if constexpr (Swap) {
++    constexpr auto descriptor = matmul2d_descriptor(Cols, Rows, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
++    matmul2d<descriptor, execution_simdgroups<1>> operation;
++    return operation.template get_destination_cooperative_tensor<decltype(b0), decltype(a0), float>();
++  } else {
++    constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
++    matmul2d<descriptor, execution_simdgroups<1>> operation;
++    return operation.template get_destination_cooperative_tensor<decltype(a0), decltype(b0), float>();
++  }
+ }
+ template <class Acc> inline void gguf_zero(thread Acc &acc) {
+ #pragma unroll
+   for (ushort i = 0; i < acc.get_capacity(); ++i) acc[i] = 0.0f;
+ }
+ // fn(row, column, value) for every element of a tile's destination.
+-template <class Acc, class Fn> inline void gguf_elements(thread Acc &acc, Fn fn) {
++template <bool Swap = GGUF_DECODE_SWAP, class Acc, class Fn> inline void gguf_elements(thread Acc &acc, Fn fn) {
+ #pragma unroll
+   for (ushort i = 0; i < acc.get_capacity(); ++i) {
+     if (!acc.is_valid_element(i)) continue;
+     const auto index = acc.get_multidimensional_index(i);
+-    fn(uint(index[1]), uint(index[0]), float(acc[i]));
++    if constexpr (Swap) fn(uint(index[0]), uint(index[1]), float(acc[i]));
++    else fn(uint(index[1]), uint(index[0]), float(acc[i]));
+   }
+ }
+ 
+@@ -47,14 +60,15 @@
+ // one simdgroup stages alone, the threadgroup's otherwise), and, when `matmuls`, run the Rows-row matmul2d of `input`
+ // on the stage. Threads that run no matmuls still stage and meet every barrier: in MSL a barrier inside a conditional
+ // must be reached by every thread of the threadgroup.
+-template <class F, ushort Rows, ushort Cols, ushort KS, ushort Threads, class Acc>
++template <class F, ushort Rows, ushort Cols, ushort KS, ushort Threads, bool Swap = false, class Acc>
+ inline void gguf_staged_steps(device bfloat *input, device uchar *w0, device uchar *w1, device uchar *meta, uint input_size,
+                               uint output_origin, threadgroup half *stage, threadgroup half2 *tl, uint thread_index,
+                               uint step_begin, uint step_end, bool matmuls, thread Acc &acc) {
+   // Prefetch: the steps whose weights are loaded ahead of the one being staged.
+   constexpr ushort Prefetch = 1, GPS = KS / 32, Items = Cols * GPS, IPT = (Items + Threads - 1) / Threads;
+   auto a = tensor(input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
+-  constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
++  constexpr auto descriptor = Swap ? matmul2d_descriptor(Cols, Rows, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate)
++                                  : matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+   matmul2d<descriptor, execution_simdgroups<1>> operation;
+   const uint groups = input_size / 32, units = groups / F::MetaGroups;
+   const uint plane_tile = output_origin / QUANT_TILE_ROWS, plane_row = output_origin % QUANT_TILE_ROWS;
+@@ -98,7 +112,8 @@
+     }
+     if (matmuls) {
+       auto a_slice = a.template slice<KS, Rows>(step * KS, 0);
+-      if (step & 1) operation.run(a_slice, b1, acc); else operation.run(a_slice, b0, acc);
++      if constexpr (Swap) { if (step & 1) operation.run(b1, a_slice, acc); else operation.run(b0, a_slice, acc); }
++      else { if (step & 1) operation.run(a_slice, b1, acc); else operation.run(a_slice, b0, acc); }
+     }
+   }
+ }
+@@ -107,7 +122,7 @@
+ template <class F, ushort Rows, ushort Cols, ushort KS, class Acc>
+ inline void staged_accumulate(device bfloat *input, device uchar *w0, device uchar *w1, device uchar *meta, uint input_size, uint output_origin,
+                      threadgroup half *stage, threadgroup half2 *tl, uint simd_lane, uint step_begin, uint step_end, thread Acc &acc) {
+-  gguf_staged_steps<F, Rows, Cols, KS, 32>(input, w0, w1, meta, input_size, output_origin, stage, tl, simd_lane, step_begin,
++  gguf_staged_steps<F, Rows, Cols, KS, 32, GGUF_DECODE_SWAP>(input, w0, w1, meta, input_size, output_origin, stage, tl, simd_lane, step_begin,
+                                            step_end, true, acc);
+   simdgroup_barrier(mem_flags::mem_threadgroup);   // the stage may be reused by a following accumulate
+ }
+--- runtime/metal/kernels/shared/gguf_linear.metal
++++ runtime/metal/kernels/shared/gguf_linear.metal
+@@ -39,7 +39,7 @@
+                     uint simd_lane, uint simd_group, uint out_stride, uint out_offset, device bfloat *aux = nullptr) {
+   const bool owns_rows = simd_group * RowsPerSG < rows;   // uniform per simdgroup
+   device bfloat *rows_input = input + ulong(simd_group) * RowsPerSG * input_size;
+-  auto acc = staged_accumulator<RowsPerSG, TileN, KS>(rows_input, input_size, stage);
++  auto acc = staged_accumulator<RowsPerSG, TileN, KS, false>(rows_input, input_size, stage);
+   gguf_zero(acc);
+   gguf_staged_steps<F, RowsPerSG, TileN, KS, Simdgroups * 32>(rows_input, w0, w1, meta, input_size, output_origin, stage, tl,
+                                                               simd_group * 32 + simd_lane, 0, input_size / KS, owns_rows,

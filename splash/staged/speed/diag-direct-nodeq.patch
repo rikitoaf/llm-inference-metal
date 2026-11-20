@@ -1,0 +1,11 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -181,7 +181,7 @@
+       QuantCoef k;
+       if constexpr (F::ScaleInChunk) k = F::coef(hdr[j], F::chunk(packed[j], 0)); else k = F::coef(hdr[j], jg);
+       half4 lo, hi;
+-      dequant_chunk<F>(packed[j], k, c, tl, lo, hi);
++      lo = half4(half(c)); hi = half4(half(j));
+ #pragma unroll
+       for (ushort t = 0; t < 4; ++t) { b[4 * j + t] = lo[t]; b[16 + 4 * j + t] = hi[t]; }
+     }

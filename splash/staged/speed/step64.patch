@@ -1,0 +1,11 @@
+--- runtime/metal/abi/Gguf.h
++++ runtime/metal/abi/Gguf.h
+@@ -15,7 +15,7 @@
+ // 32 rows: two simdgroups, each staging its own GGUF_STAGED_COLUMNS columns
+ // GGUF_STAGED_STEP inputs at a time over 8, 16 or 32 rows.
+ #define GGUF_STAGED_COLUMNS 32u
+-#define GGUF_STAGED_STEP 32u
++#define GGUF_STAGED_STEP 64u
+ #define GGUF_STAGED_THREADS (GGUF_TILE_COLUMNS / GGUF_STAGED_COLUMNS * 32u)
+ // Prefill tile of the staged kernels: GGUF_PREFILL_SIMDGROUPS simdgroups of
+ // GGUF_PREFILL_SIMDGROUP_ROWS rows share one stage of GGUF_PREFILL_STEP

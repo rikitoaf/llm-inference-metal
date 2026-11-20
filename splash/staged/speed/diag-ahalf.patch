@@ -1,0 +1,20 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -20,7 +20,7 @@
+ // initial values on Apple9 in runtime-format kernels (also with shader validation).
+ template <ushort Rows, ushort Cols, ushort KS>
+ inline auto staged_accumulator(device bfloat *input, uint input_size, threadgroup half *stage) {
+-  auto a = tensor(input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
++  auto a = tensor((device half *)input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
+   constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+   matmul2d<descriptor, execution_simdgroups<1>> operation;
+   auto a0 = a.template slice<KS, Rows>(0, 0);
+@@ -53,7 +53,7 @@
+                               uint step_begin, uint step_end, bool matmuls, thread Acc &acc) {
+   // Prefetch: the steps whose weights are loaded ahead of the one being staged.
+   constexpr ushort Prefetch = 1, GPS = KS / 32, Items = Cols * GPS, IPT = (Items + Threads - 1) / Threads;
+-  auto a = tensor(input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
++  auto a = tensor((device half *)input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
+   constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+   matmul2d<descriptor, execution_simdgroups<1>> operation;
+   const uint groups = input_size / 32, units = groups / F::MetaGroups;

@@ -1,0 +1,44 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -161,7 +161,9 @@
+     if (step_begin < step_end) packed[j] = F::load(tw0 + (ulong(step_begin) * QUANT_TILE_ROWS + col) * F::P0, tw1 + (ulong(step_begin) * QUANT_TILE_ROWS + col) * F::P1);
+     hdr[j] = F::loadMeta(tmeta + (ulong(hdr_unit) * QUANT_TILE_ROWS + col) * F::MetaBytes);
+   }
+-  for (uint step = step_begin; step < step_end; ++step) {
++  auto b1 = operation.template get_right_input_cooperative_tensor<bfloat, half, float>();
++  // Two operands alternate, so the dequantization of a step need not wait for the matmul of the one before.
++  const auto fill = [&](thread auto &dst, uint step) {
+     const uint unit = step / F::MetaGroups; const ushort jg = step % F::MetaGroups;
+     if (unit != hdr_unit) {
+ #pragma unroll
+@@ -183,15 +185,27 @@
+       half4 lo, hi;
+       dequant_chunk<F>(packed[j], k, c, tl, lo, hi);
+ #pragma unroll
+-      for (ushort t = 0; t < 4; ++t) { b[4 * j + t] = lo[t]; b[16 + 4 * j + t] = hi[t]; }
++      for (ushort t = 0; t < 4; ++t) { dst[4 * j + t] = lo[t]; dst[16 + 4 * j + t] = hi[t]; }
+     }
+-    auto a_slice = a.template slice<KS, Rows>(step * KS, 0);
+-    operation.run(a_slice, b, acc);
+     if (step + 1 < step_end) {
+ #pragma unroll
+       for (ushort j = 0; j < 4; ++j) packed[j] = next[j];
+     }
++  };
++  uint step = step_begin;
++  for (; step + 1 < step_end; step += 2) {
++    fill(b, step);
++    auto s0 = a.template slice<KS, Rows>(step * KS, 0);
++    operation.run(s0, b, acc);
++    fill(b1, step + 1);
++    auto s1 = a.template slice<KS, Rows>((step + 1) * KS, 0);
++    operation.run(s1, b1, acc);
+   }
++  if (step < step_end) {
++    fill(b, step);
++    auto s0 = a.template slice<KS, Rows>(step * KS, 0);
++    operation.run(s0, b, acc);
++  }
+ }
+ 
+ #ifndef GGUF_DECODE_DIRECT

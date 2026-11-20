@@ -1,0 +1,53 @@
+--- runtime/ops/LinearGguf.cpp	2026-10-05 19:33:37
++++ runtime/ops/LinearGguf.cpp	2026-10-21 01:51:13
+@@ -22,6 +22,12 @@
+ // fragments, so the tile holds 8, 16 or 32 rows and a three-lane step runs
+ // the 32-row tile over four lanes of storage.
+ constexpr uint32_t stagedTileRows(uint32_t rows) noexcept { return rows <= 8 ? 8 : rows <= 16 ? 16 : 32; }
++// The rows the staged decode tile computes for `rows`: one lane (8 rows) runs the 16-row tile too. On the 16-core
++// M5 Pro the 16-row kernels ran faster at one lane than the 8-row ones (decode-profile: 72.35 ms of GGUF kernels at
++// two lanes against 75.88 at one; gguf-projection-benchmark: 2-8% on every 27B shape), as MPP computes 16-row
++// fragments. The padding rows are the next lane's storage, which the decode arena always holds; their outputs are
++// never read, and rows are independent, so the eight live rows are bitwise the same.
++constexpr uint32_t stagedComputeRows(uint32_t rows) noexcept { return rows <= 16 ? 16 : 32; }
+ 
+ std::string decodeKernel(const char *format, uint32_t rows, char epilogue) {
+   return std::string("gguf_decode_") + format + "_m" + std::to_string(rows) + "_" + epilogue;
+@@ -220,7 +226,7 @@
+   if (config_.tile == LinearTile::GgufRegister) return workload_.rows;
+   if (config_.tile == LinearTile::GgufPrefill)
+     return (workload_.rows + GGUF_PREFILL_ROWS - 1) / GGUF_PREFILL_ROWS * GGUF_PREFILL_ROWS;
+-  return stagedTileRows(workload_.rows);
++  return stagedComputeRows(workload_.rows);
+ }
+ 
+ LinearScratchSize LinearPlan::blockScratchSize() const noexcept {
+--- dev/tests/engine/gguf_projection_test.mm
++++ dev/tests/engine/gguf_projection_test.mm
+@@ -427,8 +427,9 @@
+                                          residual.begin() + uint64_t{lane + 1} * kLaneRows * columns);
+             const LinearWorkload one = decode({columns, K}, 1, epilogue);
+             const LinearPlan plan = Linear::plan(one, config(tile, one, splits), FloatOutput::BFloat16);
+-            lanesAlone.push_back(run(backend, linear, plan, up, gated, storageRows(rows, K, kLaneRows, kLaneRows),
+-                                     storageRows(aux, columns, kLaneRows, kLaneRows), kPoisonNaN, N,
++            const uint32_t storage = plan.storageRows();
++            lanesAlone.push_back(run(backend, linear, plan, up, gated, storageRows(rows, K, kLaneRows, storage),
++                                     storageRows(aux, columns, kLaneRows, storage), kPoisonNaN, N,
+                                      what + " lane " + std::to_string(lane) + " alone"));
+           }
+           for (uint32_t lanes = 1; lanes <= kMaximumLanes; ++lanes) {
+--- dev/tests/engine/gguf_projection_test.mm
++++ dev/tests/engine/gguf_projection_test.mm
+@@ -654,9 +654,9 @@
+   std::vector<Operands> operands;
+   std::vector<std::vector<uint16_t>> auxiliary;
+   for (uint32_t i = 0; i < 2; ++i) {
+-    const uint32_t rows = workloads[i].rows, n = pair[i]->matrix.outputSize;
+-    auxiliary.push_back(storageRows(pair[i]->residual, n, rows, rows));
+-    operands.emplace_back(backend, plan(i, 1), storageRows(pair[i]->x, pair[i]->matrix.inputSize, rows, rows),
++    const uint32_t rows = workloads[i].rows, n = pair[i]->matrix.outputSize, storage = plan(i, 1).storageRows();
++    auxiliary.push_back(storageRows(pair[i]->residual, n, rows, storage));
++    operands.emplace_back(backend, plan(i, 1), storageRows(pair[i]->x, pair[i]->matrix.inputSize, rows, storage),
+                           auxiliary.back());
+   }
+   const auto check = [&](const std::array<uint32_t, 2> &splits, const std::string &what) {

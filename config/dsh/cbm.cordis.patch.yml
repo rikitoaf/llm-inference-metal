@@ -1,0 +1,44 @@
+# codebase-memory-mcp (CBM) trial (opt-in: DSH_CBM=1, applied by scripts/dsh-env.sh). Off by default.
+# A code knowledge graph (tree-sitter + SQLite, DeusData, MIT) built from source at commit 612eee2 and installed to
+# ~/.local/bin (splash/EXTERNAL-2026-11-09.md section 3). The scout profile exposes 8 read-only tools (search_graph,
+# trace_path, get_code_snippet, get_file_outline, get_architecture, list_projects, index_status,
+# check_index_coverage): 9,263 chars of schema (~2.3K tokens) in every request's cached prefix, measured from tools/list.
+# Scout cannot index: run scripts/cbm-index.sh <repo>... first (CLI, moderate mode: ~1.5-8 s per platform repo).
+# `project` accepts the repo's absolute path or folder name. The front end and its daemon hold ~8 MB while idle and
+# exit with the session. Global CBM config (set once): auto_index false, auto_watch false, watcher_enabled false.
+- insert:
+    - id: mcp-cbm
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: cbm
+        transport: stdio
+        # Through the result filter proxy (plugins/dsh-plugin-fast-search/cbm-mcp-filter.mjs, 2026-11-18): limit 10
+        # when absent on search_graph/search_code/trace_path, JSON-schema Variable rows dropped, qualified-name prefix
+        # "Users-abdul.rakib-WebstormProjects-<repo>" shown as "@<repo>" and expanded back on the way in.
+        # 11 real queries: result chars -53% (search_graph without a limit -80..-89%).
+        command: /Users/abdul.rakib/.nvm/versions/node/v22.22.3/bin/node
+        args:
+          - /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-fast-search/cbm-mcp-filter.mjs
+          - /Users/abdul.rakib/.local/bin/codebase-memory-mcp
+          - --tool-profile=analysis   # scout + search_code (grep mapped to functions), query_graph, detect_changes, get_graph_schema, compare_graphs: ~16K chars (2026-11-11)
+        env:
+          CBM_MEM_BUDGET_MB: "1024"                              # cap for the in-memory graph while indexing
+          CBM_ALLOWED_ROOT: /Users/abdul.rakib/WebstormProjects  # plus the allow-root grant for <repo>/workspace
+          CBM_MAX_FILE_BYTES: "1048576"                          # skip data blobs (25-38 MB JSON in one platform repo)
+          CBM_LOG_LEVEL: warn
+    # Tool doctrine for the graph tools (plugins/dsh-plugin-guidelines/rules/code-graph.md, ~1.2K chars, cached): use
+    # graph queries before file reads, so long sessions grow more slowly.
+    - id: guidelines-code-graph
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-guidelines/index.mjs
+      config:
+        rules: [code-graph]
+        sectionOrder: 10175
+        isResumeNoticeEnabled: false
+        areCommandsEnabled: false
+    # A "code graph first" <system-reminder> at the start of each user turn, and again after 10 navigation steps
+    # without a graph call (plugins/dsh-plugin-fast-search/graph-first-reminder.mjs). The model used the graph only in
+    # turns whose user message asked for it (28 calls vs 0-2), so the reminder sits where those words would.
+    - id: graph-first-reminder
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-fast-search/graph-first-reminder.mjs
+      config:
+        driftSteps: 10

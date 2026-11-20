@@ -1,0 +1,8 @@
+# Smaller read window (opt-in: DSH_READ_WINDOW=1, applied by scripts/dsh-env.sh). Off by default.
+# dsh's read returns up to 2,000 lines (51,200 bytes) when the agent gives no limit, and read results are 67% of all
+# tool-result characters in this workspace's sessions (session_tool_share.py, 81 sessions). 400 lines keeps one call
+# to a screenful-sized module while large files need an explicit offset/limit to continue (the footer says how).
+# Every inline character is prefill now and decode cost later (~0.45 ms/cycle per 1K tokens, splash/ANALYSIS.md 5).
+- id: tool-fs
+  config:
+    readLimit: 400

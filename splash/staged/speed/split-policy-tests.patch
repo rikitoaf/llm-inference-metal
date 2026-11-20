@@ -1,0 +1,53 @@
+--- dev/tests/engine/linear_plan_test.mm	2026-10-19 19:02:31
++++ dev/tests/engine/linear_plan_test.mm	2026-10-19 19:02:31
+@@ -785,17 +785,22 @@
+ constexpr auto kNone = LinearEpilogue::None, kResidual = LinearEpilogue::Residual, kGateUp = LinearEpilogue::GateUp;
+ 
+ // Six threadgroups per core, at least 512 inputs per partition, for every
+-// projection kind.
++// projection kind; twelve while partitions keep 2048 inputs.
+ constexpr std::array kStagedSplitAnchors{
+-    SplitAnchor{"27B down", 16, 5120, 17408, 8, kResidual, 1, 2},
+-    SplitAnchor{"27B down", 20, 5120, 17408, 8, kResidual, 1, 2},
+-    SplitAnchor{"27B down", 10, 5120, 17408, 8, kResidual, 1, 1},
+-    SplitAnchor{"27B down", 40, 5120, 17408, 8, kResidual, 1, 4},
++    SplitAnchor{"27B down", 16, 5120, 17408, 8, kResidual, 1, 4},
++    SplitAnchor{"27B down", 20, 5120, 17408, 8, kResidual, 1, 4},
++    SplitAnchor{"27B down", 10, 5120, 17408, 8, kResidual, 1, 2},
++    SplitAnchor{"27B down", 40, 5120, 17408, 8, kResidual, 1, 8},
++    SplitAnchor{"27B out_proj", 16, 5120, 6144, 8, kResidual, 1, 2},
++    SplitAnchor{"27B GDN qkv", 16, 10240, 5120, 8, kNone, 1, 2},
++    SplitAnchor{"27B three-segment GDN input", 16, 16640, 5120, 8, kNone, 3, 1},
++    SplitAnchor{"27B three-segment attention input", 16, 14336, 5120, 8, kNone, 3, 1},
++    SplitAnchor{"27B three-segment attention input", 20, 14336, 5120, 8, kNone, 3, 2},
+     SplitAnchor{"35B output projection", 16, 2048, 4096, 8, kResidual, 1, 4},
+     SplitAnchor{"35B shared-expert gate/up", 16, 512, 2048, 8, kGateUp, 1, 4},
+     SplitAnchor{"27B gate/up", 16, 17408, 5120, 8, kGateUp, 1, 1},
+     SplitAnchor{"two-segment fused projection", 16, 4096, 5120, 8, kNone, 2, 2},
+-    SplitAnchor{"27B three-segment GDN input", 40, 16640, 5120, 8, kNone, 3, 1},
++    SplitAnchor{"27B three-segment GDN input", 40, 16640, 5120, 8, kNone, 3, 2},
+     SplitAnchor{"27B vocabulary head", 16, 248320, 5120, 8, kNone, 1, 1},
+     SplitAnchor{"narrow 1024 x 256 tensor", 16, 1024, 256, 8, kNone, 1, 1},
+     SplitAnchor{"narrow 1024 x 3072 tensor", 16, 1024, 3072, 8, kNone, 1, 4}};
+@@ -859,7 +864,7 @@
+   const LinearWorkload down{{5120, 17408}, 8, LinearPhase::Decode, LinearEpilogue::Residual};
+   const LinearPlan single = linear.plan(down, blockProjection(5120, 17408, 1));
+   require(single.workload().weightLayout == WeightLayout::Block32 &&
+-              single.configuration() == LinearConfig{.tile = LinearTile::GgufStaged, .splits = 2} &&
++              single.configuration() == LinearConfig{.tile = LinearTile::GgufStaged, .splits = 4} &&
+               single.groups() == 80 &&
+               single.input() == LinearInput::Plain &&
+               single.scratchSize().partials == splitPartialsBytes(single) &&
+@@ -882,10 +887,10 @@
+                                      {33U, 128U}, {100U, 128U}, {129U, 256U}, {2048U, 2048U}}) {
+     const LinearPlan prefill = linear.plan({{5120, 17408}, rows, LinearPhase::Prefill, LinearEpilogue::UpWithGate},
+                                            blockProjection(5120, 17408, 1));
+-    // Chunks of up to 32 rows take the staged tile and its split rule (two
++    // Chunks of up to 32 rows take the staged tile and its split rule (four
+     // partitions of the 80-tile grid on 16 cores); the 128-row prefill tile
+     // takes none.
+-    const uint32_t splits = rows <= 32 ? 2 : 1;
++    const uint32_t splits = rows <= 32 ? 4 : 1;
+     require(prefill.storageRows() == storage && prefill.sumsBytes() == 0 && prefill.downSumsBytes() == 0 &&
+                 prefill.gateScratchBytes() == gateBytes(prefill) &&
+                 prefill.configuration().tile == (rows <= 32 ? LinearTile::GgufStaged : LinearTile::GgufPrefill) &&

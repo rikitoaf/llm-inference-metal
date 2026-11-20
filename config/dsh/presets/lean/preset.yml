@@ -1,0 +1,3 @@
+name: Lean (local Qwen)
+description: bash, read/edit/write/read_image, glob/grep and ask_user, plus the host's MCP tools (xerj). Mirrors the lean tool surface of config/dsh/qwen.cordis.patch.yml for the web UI.
+order: 0

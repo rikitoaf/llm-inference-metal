@@ -1,0 +1,5 @@
+# xerj MCP off by default (2026-11-13): codebase-memory-mcp (DSH_CBM=1) replaced it for code search, the xerj node
+# (port 9200) is off by default for RAM, and without the node the bridge lists no tools but still spawns two
+# processes per dsh. DSH_XERJ=1 (scripts/dsh-env.sh) keeps the mcp-xerj row from config/dsh/qwen.cordis.patch.yml.
+- id: mcp-xerj
+  disabled: true

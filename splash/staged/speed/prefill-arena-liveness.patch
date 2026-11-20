@@ -1,0 +1,141 @@
+diff --git a/runtime/model/RuntimeArenas.hpp b/runtime/model/RuntimeArenas.hpp
+index 56c5c91..bc6f588 100644
+--- a/runtime/model/RuntimeArenas.hpp
++++ b/runtime/model/RuntimeArenas.hpp
+@@ -138,6 +138,23 @@ constexpr Tensor moeScratchTensor(size_t field) noexcept {
+ [[nodiscard]] std::array<uint64_t, prefillTensorCount>
+ prefillTensorBytes(const RuntimeGeometry &geometry,
+                    const ops::ExecutionPlans &operators);
++
++// Where each prefill tensor lives in the arena. A dense layer's mixer
++// scratch (GDN or attention) dies at its output projection, before the FFN
++// writes its intermediates, and the FFN's die at its down projection, before
++// the next mixer: the three sets share one region, each packed from its
++// start, and the GDN and attention outputs (read only by their layer's FFN)
++// share another. Every dispatch of a prefill runs in one serial compute
++// encoder, so a set's writes follow the reads of the set before it.
++// Everything else (hidden rows, norms, sums, RoPE tables, captures, the
++// draft context, split scratch, MoE scratch) keeps its own range.
++struct PrefillLayout final {
++  std::array<uint64_t, prefillTensorCount> offsets{};
++  std::array<uint64_t, prefillTensorCount> sizes{};
++  uint64_t bytes = 0;
++};
++[[nodiscard]] PrefillLayout prefillLayout(const RuntimeGeometry &geometry,
++                                          const ops::ExecutionPlans &operators);
+ [[nodiscard]] uint64_t plannedPrefillBytes(const RuntimeGeometry &geometry,
+                                            const ops::ExecutionPlans &operators);
+ 
+@@ -146,17 +163,16 @@ public:
+   PrefillArena(metal::MetalBackend &backend, const RuntimeGeometry &geometry,
+                 const ops::ExecutionPlans &operators)
+       : bytes_(plannedPrefillBytes(geometry, operators)) {
+-    const auto sizes = prefillTensorBytes(geometry, operators);
++    const PrefillLayout layout = prefillLayout(geometry, operators);
++    if (layout.bytes != bytes_)
++      throw std::logic_error("prefill arena mismatch");
+     base_ = backend.allocateBuffer(bytes_, metal::BufferStorage::Shared,
+                                    "qwen-shared-prefill");
+-    uint64_t cursor = 0;
+-    for (uint32_t index = 0; index < sizes.size(); ++index) {
+-      if (sizes[index])
+-        tensors_[index] = backend.view(base_, cursor, sizes[index]);
+-      cursor += alignUp(sizes[index]);
++    for (uint32_t index = 0; index < prefillTensorCount; ++index) {
++      if (layout.sizes[index])
++        tensors_[index] =
++            backend.view(base_, layout.offsets[index], layout.sizes[index]);
+     }
+-    if (cursor != bytes_)
+-      throw std::logic_error("prefill arena mismatch");
+     auto *target = static_cast<float *>(
+         get(PrefillTensor::TargetInverseFrequencies).contents());
+     auto *draft = static_cast<float *>(
+diff --git a/runtime/model/RuntimeArenas.mm b/runtime/model/RuntimeArenas.mm
+index 731b513..5703611 100644
+--- a/runtime/model/RuntimeArenas.mm
++++ b/runtime/model/RuntimeArenas.mm
+@@ -133,13 +133,78 @@
+   return result;
+ }
+ 
+-uint64_t plannedPrefillBytes(const RuntimeGeometry &geometry,
++namespace {
++// The shared regions of PrefillLayout: a tensor's region and its set within
++// it (sets of one region are never live at once).
++enum class PrefillRegion : uint32_t { Own, LayerScratch, MixerOutput };
++struct PrefillPlace {
++  PrefillRegion region = PrefillRegion::Own;
++  uint32_t set = 0;
++};
++constexpr uint32_t kPrefillSets = 3;
++
++constexpr PrefillPlace prefillPlace(PrefillTensor tensor) noexcept {
++  switch (tensor) {
++  case PrefillTensor::GdnPacked:
++  case PrefillTensor::GdnQueries:
++  case PrefillTensor::GdnKeys:
++  case PrefillTensor::GdnValues:
++  case PrefillTensor::GdnDecay:
++  case PrefillTensor::GdnBeta:
++  case PrefillTensor::Recurrent:
++  case PrefillTensor::GdnHidden:
++    return {PrefillRegion::LayerScratch, 0};
++  case PrefillTensor::FullPacked:
++  case PrefillTensor::FullQueries:
++  case PrefillTensor::FullAttention:
++  case PrefillTensor::AttentionPartials:
++  case PrefillTensor::AttentionStatistics:
++  case PrefillTensor::AttentionHidden:
++  case PrefillTensor::ChunkKeys:
++  case PrefillTensor::ChunkValues:
++    return {PrefillRegion::LayerScratch, 1};
++  case PrefillTensor::GateIntermediate:
++  case PrefillTensor::Intermediate:
++    return {PrefillRegion::LayerScratch, 2};
++  case PrefillTensor::GdnOutput:
++    return {PrefillRegion::MixerOutput, 0};
++  case PrefillTensor::AttentionOutput:
++    return {PrefillRegion::MixerOutput, 1};
++  default:
++    return {};
++  }
++}
++} // namespace
++
++PrefillLayout prefillLayout(const RuntimeGeometry &geometry,
+                             const ops::ExecutionPlans &operators) {
+-  uint64_t bytes = 0;
+-  for (uint64_t value : prefillTensorBytes(geometry, operators)) {
+-    bytes = checkedAdd(bytes, alignUp(value), "prefill arena");
++  PrefillLayout layout;
++  layout.sizes = prefillTensorBytes(geometry, operators);
++  uint64_t cursor = 0;
++  for (uint32_t index = 0; index < prefillTensorCount; ++index) {
++    if (prefillPlace(static_cast<PrefillTensor>(index)).region != PrefillRegion::Own)
++      continue;
++    layout.offsets[index] = cursor;
++    cursor = checkedAdd(cursor, alignUp(layout.sizes[index]), "prefill arena");
+   }
+-  return bytes;
++  for (const PrefillRegion region : {PrefillRegion::LayerScratch, PrefillRegion::MixerOutput}) {
++    std::array<uint64_t, kPrefillSets> used{};
++    for (uint32_t index = 0; index < prefillTensorCount; ++index) {
++      const PrefillPlace place = prefillPlace(static_cast<PrefillTensor>(index));
++      if (place.region != region)
++        continue;
++      layout.offsets[index] = cursor + used[place.set];
++      used[place.set] = checkedAdd(used[place.set], alignUp(layout.sizes[index]), "prefill arena");
++    }
++    cursor = checkedAdd(cursor, *std::max_element(used.begin(), used.end()), "prefill arena");
++  }
++  layout.bytes = cursor;
++  return layout;
++}
++
++uint64_t plannedPrefillBytes(const RuntimeGeometry &geometry,
++                            const ops::ExecutionPlans &operators) {
++  return prefillLayout(geometry, operators).bytes;
+ }
+ 
+ static uint64_t gdnPackedStride(const RuntimeGeometry &geometry) noexcept {

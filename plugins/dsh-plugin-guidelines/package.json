@@ -1,0 +1,10 @@
+{
+  "name": "dsh-plugin-guidelines",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Coding guidelines (Karpathy, ponytail, naming conventions) as cached system-prompt sections, plus /handoff and /resume",
+  "main": "index.mjs",
+  "keywords": ["dsh-plugin"],
+  "license": "MIT"
+}

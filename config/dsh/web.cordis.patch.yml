@@ -1,0 +1,13 @@
+# dsh patch layer for the web profile only (scripts/dsh-env.sh adds it for `web` profiles; the headless
+# profile has no agent-presets row and rejects a patch that names one).
+#
+# The web app disables the base tool rows and gives each session an agent preset instead (shipped
+# default `standard`: 32 tools, pruner threshold 8,192, bash run_in_background on), so sections 3-3c of
+# qwen.cordis.patch.yml never reached web sessions. config/dsh/presets/lean carries the same choices as a
+# preset and becomes the default for new sessions (found 2026-11-02). Running sessions keep their preset;
+# a per-user default picked in the web UI's settings overrides this one.
+- id: agent-presets
+  config:
+    default: lean
+    roots:
+      - path: /Users/abdul.rakib/agentMania/dsh-qwen-jev/config/dsh/presets

@@ -3,7 +3,9 @@
 # patch entries; `- id: X` replaces row X's keys (a `config` replaces the whole row config),
 # `- insert: [...]` adds rows. Inspect the composed result with scripts/dsh-dump-config.sh.
 
-# 1. Local llama-server through the pi-ai adapter (OpenAI chat completions).
+# 1. Local llama-server through the pi-ai adapter (OpenAI chat completions). BACKEND=splash (the default) replaces this
+#    provider's URL, model label, context window and reasoning format with config/dsh/splash.cordis.patch.yml
+#    (reasoning_effort: high -> the template's xhigh; off -> none), via scripts/dsh-env.sh.
 - id: llm-pi-ai
   config:
     providers:
@@ -80,6 +82,19 @@
   config:
     maxInlineBytes: 16000
 
+# 3c. Keep old tool results as they are. tool-result-pruner rewrites every old result over thresholdChars (shipped
+#     8,192) once the context reaches 80%, and everything after the first rewrite has to be prefilled again: in two
+#     long sessions that was a 98K- and a 77K-token re-prefill (5-6 minutes each, ~10-14% of the sessions' model
+#     time), and the compaction that follows found no cached prefix either. Inline results are capped at 16,000
+#     bytes above, so a threshold past that cap leaves them alone; compaction starts a few steps earlier instead
+#     (decided 2026-10-27).
+- id: tool-result-pruner
+  config:
+    thresholdChars: 16384
+
+# 3d. The web UI ignores sections 3-3c: it gives each session an agent preset instead. See
+#     config/dsh/web.cordis.patch.yml and config/dsh/presets/lean (added for web profiles only).
+
 # 4. JEV gates (plugins/dsh-plugin-jev). The plugin path must be absolute.
 - insert:
     - id: jev
@@ -100,3 +115,56 @@
           enabled: true
           continueAt: 0.8
           maxContinues: 2
+
+# 4b. Runaway-reply guard (plugins/dsh-plugin-runaway, 2026-11-02). A reply that reasons past max_tokens used to end the
+#     whole run with nothing written; the guard steers the agent back with thinking off for that one step. Eval at xhigh,
+#     t1-t6: hidden pass 45.2% (18 runs) -> 84.7% (13 runs), no task regressed, mean wall 275 -> 265 s (SPEED_LOG).
+- insert:
+    - id: runaway
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-runaway/index.mjs
+      config:
+        maxContinues: 2
+
+# 4c. Compaction summaries with thinking off (plugins/dsh-plugin-purpose-effort, 2026-11-04). dsh-compaction-basic sends
+#     its summary request with no reasoningEffort, so it ran at xhigh: real-session compactions took 230-465 s and one
+#     failed after 261 s ("summarization truncated at the token cap": reasoning used the 8,192-token budget). Only
+#     requests with purpose "compaction" change; agent steps keep their effort.
+- insert:
+    - id: purpose-effort
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-purpose-effort/index.mjs
+      config:
+        efforts:
+          compaction: 'off'
+
+# 4d. Coding guidelines and session handoff (plugins/dsh-plugin-guidelines, 2026-11-04). Static system-prompt sections:
+#     Karpathy guidelines, ponytail (least code), naming conventions, handoff format (~8.3K chars, ~2.1K tokens, in the
+#     cached prefix). Adds /handoff [quick] and /resume, and a notice when a session starts beside a HANDOFF.md.
+#     Drop a name from `rules` to turn a rule set off.
+- insert:
+    - id: guidelines
+      name: /Users/abdul.rakib/agentMania/dsh-qwen-jev/plugins/dsh-plugin-guidelines/index.mjs
+      config:
+        rules: [karpathy, ponytail, naming, handoff]
+
+# 5. XERJ MCP server: cross-repo code search over the platform repos (BM25 + vector + go-to-definition).
+#    The node is started and indexed by scripts/serve-xerj.sh; `xerj mcp` only proxies to it, so a node
+#    that is down leaves the harness running without the mcp__xerj__* tools. `xerj mcp` publishes 22
+#    tools (~55K chars of schema, prefill on every request) and this client has no tool filter, so
+#    scripts/xerj-mcp-filter.mjs sits in between and exposes 5 (~23K chars): def, search,
+#    semantic_search, hybrid_search, map. It hides batch_search (5+ GB node RAM, ~196K-char replies)
+#    and field_report. XERJ_MCP_TOOLS=a,b,c in env overrides the list.
+- insert:
+    - id: mcp-xerj
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: xerj
+        transport: stdio
+        command: /Users/abdul.rakib/.nvm/versions/node/v22.22.3/bin/node   # same node as NODE_BIN in dsh-env.sh
+        args:
+          - /Users/abdul.rakib/agentMania/dsh-qwen-jev/scripts/xerj-mcp-filter.mjs
+          - /Users/abdul.rakib/.local/bin/xerj
+          - mcp
+          - --disable-feedback
+        env:
+          XERJ_URL: http://127.0.0.1:9200
+          XERJ_DISABLE_FEEDBACK: "true"       # no "send a field report" prompts to the local model

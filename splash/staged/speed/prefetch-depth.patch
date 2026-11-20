@@ -1,0 +1,41 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h	2026-10-05 19:33:25
++++ runtime/metal/kernels/common/gguf_staged_tile.h	2026-10-15 10:53:21
+@@ -12,6 +12,12 @@
+ // a half stage and run matmul2d on it, in the decode tile each simdgroup its own columns alone, in the prefill tile
+ // every thread for the columns all simdgroups share. Includers set `#pragma clang fp reassociate(off)` first.
+ 
++// How many steps of weights a thread holds in registers ahead of the step it stages (1 = upstream). Deeper keeps more
++// loads in flight per simdgroup; the values staged are the same.
++#ifndef GGUF_STAGED_PREFETCH
++#define GGUF_STAGED_PREFETCH 1
++#endif
++
+ // The two stages of a simdgroup, and of the threadgroup's GGUF_TILE_COLUMNS / GGUF_STAGED_COLUMNS simdgroups.
+ constant constexpr uint kStagedSimdgroupStage = 2 * GGUF_STAGED_COLUMNS * GGUF_STAGED_STEP;
+ constant constexpr uint kStagedStages = GGUF_TILE_COLUMNS / GGUF_STAGED_COLUMNS * kStagedSimdgroupStage;
+@@ -52,7 +58,7 @@
+                               uint output_origin, threadgroup half *stage, threadgroup half2 *tl, uint thread_index,
+                               uint step_begin, uint step_end, bool matmuls, thread Acc &acc) {
+   // Prefetch: the steps whose weights are loaded ahead of the one being staged.
+-  constexpr ushort Prefetch = 1, GPS = KS / 32, Items = Cols * GPS, IPT = (Items + Threads - 1) / Threads;
++  constexpr ushort Prefetch = GGUF_STAGED_PREFETCH, GPS = KS / 32, Items = Cols * GPS, IPT = (Items + Threads - 1) / Threads;
+   auto a = tensor(input, dextents<int, 2>{int(input_size), Rows}, array<int, 2>{1, int(input_size)});
+   constexpr auto descriptor = matmul2d_descriptor(Rows, Cols, KS, false, true, false, matmul2d_descriptor::mode::multiply_accumulate);
+   matmul2d<descriptor, execution_simdgroups<1>> operation;
+@@ -88,10 +94,13 @@
+     }
+     if constexpr (Threads == 32) simdgroup_barrier(mem_flags::mem_threadgroup);
+     else threadgroup_barrier(mem_flags::mem_threadgroup);
+-    if (step + Prefetch < step_end) {
+ #pragma unroll
+-      for (ushort it = 0; it < IPT; ++it) {
+-        const uint item = thread_index + it * Threads; if (item >= Items) break;
++    for (ushort it = 0; it < IPT; ++it) {
++      const uint item = thread_index + it * Threads; if (item >= Items) break;
++      // The queue moves one step: slot 0, just staged, takes the next step's weights.
++#pragma unroll
++      for (ushort pf = 0; pf + 1 < Prefetch; ++pf) packed[pf][it] = packed[pf + 1][it];
++      if (step + Prefetch < step_end) {
+         const uint col = item % Cols, gi = item / Cols; const ulong g = ulong(step + Prefetch) * GPS + gi;
+         packed[Prefetch - 1][it] = F::load(tw0 + (g * QUANT_TILE_ROWS + col) * F::P0, tw1 + (g * QUANT_TILE_ROWS + col) * F::P1);
+       }

@@ -1,0 +1,55 @@
+[1] t1-intervals nojev r0: hidden 11/11 visible_ok=True wall=74.7s tampered=False timeout=False jev=0c/0t/0s
+[2] t2-semver nojev r0: hidden 8/13 visible_ok=False wall=293.1s tampered=False timeout=False jev=0c/0t/0s
+[3] t3-inventory nojev r0: hidden 14/14 visible_ok=True wall=241.1s tampered=False timeout=False jev=0c/0t/0s
+Traceback (most recent call last):
+  File "/Users/abdul.rakib/agentMania/dsh-qwen-jev/eval/run_eval.py", line 156, in <module>
+    main()
+  File "/Users/abdul.rakib/agentMania/dsh-qwen-jev/eval/run_eval.py", line 144, in main
+    r = run_one(task, cond, rep, outdir, a.timeout)
+  File "/Users/abdul.rakib/agentMania/dsh-qwen-jev/eval/run_eval.py", line 92, in run_one
+    "tests_tampered": before != after, **grade(task, workdir),
+  File "/Users/abdul.rakib/agentMania/dsh-qwen-jev/eval/run_eval.py", line 49, in grade
+    ran, bad, _ = unittest_counts(tmp, ["-q", "test_hidden"])
+  File "/Users/abdul.rakib/agentMania/dsh-qwen-jev/eval/run_eval.py", line 35, in unittest_counts
+    r = subprocess.run([sys.executable, "-m", "unittest", *args], cwd=cwd, capture_output=True, text=True, timeout=120)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 507, in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 1134, in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 1980, in _communicate
+    self._check_timeout(endtime, orig_timeout, stdout, stderr)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/subprocess.py", line 1178, in _check_timeout
+    raise TimeoutExpired(
+subprocess.TimeoutExpired: Command '['/Library/Developer/CommandLineTools/usr/bin/python3', '-m', 'unittest', '-q', 'test_hidden']' timed out after 120 seconds
+[1] t5-ratelimit nojev r0: hidden 12/12 visible_ok=True wall=196.1s tampered=False timeout=False jev=0c/0t/0s
+[2] t6-mdtoc nojev r0: hidden 13/14 visible_ok=True wall=325.1s tampered=False timeout=False jev=0c/0t/0s
+model profile: qwen
+
+condition runs  hidden pass  all-pass runs  visible ok  mean wall  tampered  timeouts
+nojev       2       96.2%         1/2          2/2         261s         0         0
+
+task             nojev (hidden, wall)
+t5-ratelimit               12/12,196s
+t6-mdtoc                   13/14,325s
+
+results: eval/results/copy-1103/results.jsonl
+[1] t1-intervals nojev r1: hidden 11/11 visible_ok=True wall=65.8s tampered=False timeout=False jev=0c/0t/0s
+[2] t2-semver nojev r1: hidden 9/13 visible_ok=True wall=297.6s tampered=False timeout=False jev=0c/0t/0s
+[3] t3-inventory nojev r1: hidden 14/14 visible_ok=True wall=178.1s tampered=False timeout=False jev=0c/0t/0s
+[4] t4-toposort nojev r1: hidden 12/12 visible_ok=True wall=326.8s tampered=False timeout=False jev=0c/0t/0s
+[5] t5-ratelimit nojev r1: hidden 12/12 visible_ok=True wall=192.3s tampered=False timeout=False jev=0c/0t/0s
+[6] t6-mdtoc nojev r1: hidden 11/14 visible_ok=True wall=296.3s tampered=False timeout=False jev=0c/0t/0s
+model profile: qwen
+
+condition runs  hidden pass  all-pass runs  visible ok  mean wall  tampered  timeouts
+nojev       6       90.8%         4/6          6/6         226s         0         0
+
+task             nojev (hidden, wall)
+t1-intervals                11/11,66s
+t2-semver                   9/13,298s
+t3-inventory               14/14,178s
+t4-toposort                12/12,327s
+t5-ratelimit               12/12,192s
+t6-mdtoc                   11/14,296s
+
+results: eval/results/copy-1103/results.jsonl

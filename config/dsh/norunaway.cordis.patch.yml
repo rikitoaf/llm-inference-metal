@@ -1,0 +1,4 @@
+# Turns the runaway-reply guard off (it is on in qwen.cordis.patch.yml section 4b), for A/B runs:
+# DSH_EXTRA_PATCH=config/dsh/norunaway.cordis.patch.yml, or eval/run_eval.py cond "noguard".
+- id: runaway
+  disabled: true

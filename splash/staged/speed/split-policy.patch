@@ -1,0 +1,54 @@
+--- runtime/ops/LinearGguf.cpp	2026-10-19 19:02:31
++++ runtime/ops/LinearGguf.cpp	2026-10-19 19:06:05
+@@ -35,7 +35,9 @@
+ // core and each partition would still keep `inputs` inputs; the split count
+ // doubles, up to the maximum, while some tier asks. Decode K is a multiple of 256,
+ // so eight partitions always hold whole 32-input groups. The rule ignores the
+-// batch width: bounds that depended on it did not pay on either family.
++// batch width: bounds that depended on it did not pay on either family, and a
++// split count that followed it would make a request's sums (added in split
++// order) depend on the requests batched with it.
+ struct SplitTier {
+   uint32_t threadgroups;
+   uint32_t inputs;
+@@ -63,8 +65,8 @@
+ // (sixteen threadgroups per core with two units per partition: 2.8%, 7.8%).
+ constexpr SplitTier kRegisterTiers[] = {{4, 256}, {32, 1024}};
+ 
+-// Staged tile (64 threads): one fitted tier, six threadgroups per core with
+-// 512 inputs per partition. Six is not a residency (12-17 of these
++// Staged tile (64 threads): two tiers. The fitted one, six threadgroups per
++// core with 512 inputs per partition. Six is not a residency (12-17 of these
+ // threadgroups run at once per core on the M5 Pro): past it a core's memory
+ // and neural accelerator are busy and more partitions only add reduction.
+ // Over the 27B and 35B dense shapes, all formats, one to four lanes, on the
+@@ -72,13 +74,27 @@
+ // 3.6% over the fastest split of each shape in total and 36% at worst on a
+ // 15-us shape (the register tiers in threads per core: 6.6%; the previous 32
+ // per core with 1024 inputs and unsplit fused and gate/up kernels: 6.4%).
+-constexpr SplitTier kStagedTiers[] = {{6, 512}};
++// The long-partition tier, twelve per core (the least residency) while each
++// partition keeps 2048 inputs: below twelve a core holds fewer threadgroups
++// than it can run at once, and a partition that long keeps its fp32 partials
++// (4 bytes per row and column) at most a twelfth of its weights at 3 bits per
++// weight and 16 rows. On the 16-core M5 Pro (gguf-projection-benchmark,
++// DRAM-cold, 2026-10-15) it splits 5120 x 17408 in four rather than two, 5-11%
++// faster at one and two lanes and 3-5% at three and four in IQ3_S and IQ3_XXS
++// but 3.5-9% slower in IQ4_XS (fastest in eight at one and two lanes, in two
++// at three and four), and 10240 x 5120 in two rather than one, IQ3_XXS 7% and
++// 6% faster at one and two lanes, 3% and 2% slower at three and four. There
++// 17408 x 5120 (17 tiles per core), the 27B's fused GDN and attention inputs
++// (16 and 14) and its 5120 x 6144 outputs (whose four partitions would keep
++// 1536 inputs) keep their splits, as every 35B projection (K 4096 at most)
++// does on six cores or more.
++constexpr SplitTier kStagedTiers[] = {{6, 512}, {12, 2048}};
+ 
+ // The staged tile's tiers on a family. Apple9 cores take as many of its
+ // threadgroups as of the register tile's, and its tiers: on a 40-core M3 Max
+ // over the 27B and 35B dense shapes at one to four lanes they come within
+ // 0-9% of each shape's fastest split (20% at one lane on 2048 x 512, a
+-// 0.012 ms projection), where the fitted tier above is 13-27% slower on
++// 0.012 ms projection), where the six-per-core tier above is 13-27% slower on
+ // 17408 x 5120 and 12288 x 5120 and 50% on 2048 x 512.
+ std::span<const SplitTier> stagedTiers(uint32_t appleGpuFamily) noexcept {
+   if (appleGpuFamily == 9) return kRegisterTiers;

@@ -1,0 +1,11 @@
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -108,7 +108,7 @@
+ inline void staged_accumulate(device bfloat *input, device uchar *w0, device uchar *w1, device uchar *meta, uint input_size, uint output_origin,
+                      threadgroup half *stage, threadgroup half2 *tl, uint simd_lane, uint step_begin, uint step_end, thread Acc &acc) {
+   gguf_staged_steps<F, Rows, Cols, KS, 32>(input, w0, w1, meta, input_size, output_origin, stage, tl, simd_lane, step_begin,
+-                                           step_end, true, acc);
++                                           step_end, false, acc);
+   simdgroup_barrier(mem_flags::mem_threadgroup);   // the stage may be reused by a following accumulate
+ }
+ 

@@ -1,0 +1,11 @@
+--- runtime/ops/LinearGguf.cpp
++++ runtime/ops/LinearGguf.cpp
+@@ -27,7 +27,7 @@
+ // two lanes against 75.88 at one; gguf-projection-benchmark: 2-8% on every 27B shape), as MPP computes 16-row
+ // fragments. The padding rows are the next lane's storage, which the decode arena always holds; their outputs are
+ // never read, and rows are independent, so the eight live rows are bitwise the same.
+-constexpr uint32_t stagedComputeRows(uint32_t rows) noexcept { return rows <= 16 ? 16 : 32; }
++constexpr uint32_t stagedComputeRows(uint32_t rows) noexcept { return rows <= 8 ? 8 : rows <= 16 ? 16 : 32; }
+ 
+ std::string decodeKernel(const char *format, uint32_t rows, char epilogue) {
+   return std::string("gguf_decode_") + format + "_m" + std::to_string(rows) + "_" + epilogue;

@@ -1,0 +1,84 @@
+--- runtime/metal/kernels/common/quant_formats.h	2026-10-05 19:33:25
++++ runtime/metal/kernels/common/quant_formats.h	2026-10-16 18:34:32
+@@ -54,11 +54,25 @@
+ // Fills the threadgroup table of format F's value pairs, as half2 (staged tiles) or bfloat2 (register tiles), entry
+ // b = (F::value(b & 15), F::value(b >> 4)) for the index byte b of a pair, when F is a codebook format; called by all
+ // threads of the threadgroup.
++// The entries a kernel specialised for format F declares for its table: the codebook formats' value pairs, and
++// IQ3_XXS's 256 grid words (quant_pair_table); one, unused, for the other formats.
++template <class F>
++constexpr uint quant_table_entries() {
++  return F::Kind == QuantCodebook || F::Id == GGUF_FMT_IQ3XXS ? kQuantPairTableEntries : 1;
++}
++
+ template <class F, class T>
+ inline void quant_pair_table(threadgroup T *table, uint thread_index, uint threads) {
+   if constexpr (F::Kind == QuantCodebook) {
+     for (uint i = thread_index; i < kQuantPairTableEntries; i += threads) table[i] = T(float2(F::value(i & 15), F::value(i >> 4)));
+     threadgroup_barrier(mem_flags::mem_threadgroup);
++  } else if constexpr (F::Id == GGUF_FMT_IQ3XXS) {
++    // IQ3_XXS's 256 grid words fill the table's 1 KB: lanes look them up with divergent indices, which threadgroup
++    // memory serves faster than the constant address space.
++    static_assert(sizeof(T) == 4, "the IQ3_XXS grid is 256 words");
++    threadgroup uint *grid = reinterpret_cast<threadgroup uint *>(table);
++    for (uint i = thread_index; i < kQuantPairTableEntries; i += threads) grid[i] = kIQ3XXSGrid[i];
++    threadgroup_barrier(mem_flags::mem_threadgroup);
+   }
+ }
+ 
+--- runtime/metal/kernels/common/gguf_staged.h	2026-10-05 19:33:25
++++ runtime/metal/kernels/common/gguf_staged.h	2026-10-16 18:34:32
+@@ -37,11 +37,19 @@
+       lo = half4(vec<S, 4>(as_type<char4>(v.x)) * S(k.s.x));
+       hi = half4(vec<S, 4>(as_type<char4>(v.y)) * S(k.s.y));
+     } else {
+-      const uint2 g = F::grid(q); const uint s = F::signs(q);
++      uint2 g;
++      if constexpr (F::Id == GGUF_FMT_IQ3XXS) {   // the grid quant_pair_table put in the threadgroup table
++        threadgroup const uint *grid = reinterpret_cast<threadgroup const uint *>(tl);
++        g = uint2(grid[q & 0xFF], grid[(q >> 8) & 0xFF]);
++      } else {
++        g = F::grid(q);
++      }
++      const uint s = F::signs(q);
+       lo = half4(float4(as_type<uchar4>(g.x)) * k.s.x);
+       hi = half4(float4(as_type<uchar4>(g.y)) * k.s.y);
+-      lo = select(lo, -lo, bool4(s & 1, s & 2, s & 4, s & 8));
+-      hi = select(hi, -hi, bool4(s & 16, s & 32, s & 64, s & 128));
++      // Sign bit 2p + i negates element i of pair p: XOR it into the half's sign bit (bit 15 of each 16).
++      lo = as_type<half4>(as_type<uint2>(lo) ^ uint2(((s & 1u) << 15) | ((s & 2u) << 30), ((s & 4u) << 13) | ((s & 8u) << 28)));
++      hi = as_type<half4>(as_type<uint2>(hi) ^ uint2(((s & 16u) << 11) | ((s & 32u) << 26), ((s & 64u) << 9) | ((s & 128u) << 24)));
+     }
+     *((threadgroup half4 *)(dst + 4 * c)) = lo; *((threadgroup half4 *)(dst + 16 + 4 * c)) = hi;
+   }
+--- runtime/metal/kernels/shared/gguf_linear.metal	2026-10-05 19:33:37
++++ runtime/metal/kernels/shared/gguf_linear.metal	2026-10-16 18:34:32
+@@ -94,7 +94,7 @@
+                         device bfloat *aux [[buffer(7)]], constant GgufDecodeParams &p [[buffer(8)]],
+                         uint2 group [[threadgroup_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]],
+                         uint simd_group [[simdgroup_index_in_threadgroup]]) {
+-  threadgroup half2 tl[F::Kind == QuantCodebook ? kQuantPairTableEntries : 1];
++  threadgroup half2 tl[quant_table_entries<F>()];
+   quant_pair_table<F>(tl, simd_group * 32 + simd_lane, GGUF_STAGED_THREADS);
+   threadgroup half stage[kStagedStages];
+   threadgroup uint arrival;
+@@ -162,7 +162,7 @@
+   uint2 group [[threadgroup_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]],                      \
+       uint simd_group [[simdgroup_index_in_threadgroup]]
+ #define GGUF_PREFILL_TABLES(F)                                                                                     \
+-  threadgroup half2 tl[F::Kind == QuantCodebook ? kQuantPairTableEntries : 1];                                     \
++  threadgroup half2 tl[quant_table_entries<F>()];                                                                   \
+   quant_pair_table<F>(tl, simd_group * 32 + simd_lane, GGUF_PREFILL_THREADS);                                      \
+   threadgroup half stage[kPrefillStages]
+ #define GGUF_PREFILL(F, f)                                                                                         \
+--- runtime/metal/kernels/decode/linear_gguf_sgmatrix.metal	2026-10-05 19:33:37
++++ runtime/metal/kernels/decode/linear_gguf_sgmatrix.metal	2026-10-16 18:34:44
+@@ -303,7 +303,7 @@
+                    constant GgufDecodeParams &p [[buffer(9)]], uint2 tg [[threadgroup_position_in_grid]],       \
+                    uint tid [[thread_index_in_threadgroup]], uint sg [[simdgroup_index_in_threadgroup]],    \
+                    uint lane [[thread_index_in_simdgroup]]) {                                               \
+-    threadgroup bfloat2 lut[F::Kind == QuantCodebook ? kQuantPairTableEntries : 1];                         \
++    threadgroup bfloat2 lut[quant_table_entries<F>()];                                   \
+     threadgroup gguf_sg::Coef<F> coefs[gguf_sg::kCoefs<F>];                                                 \
+     threadgroup uint arrival;                                                                               \
+     quant_pair_table<F>(lut, tid, GGUF_REGISTER_THREADS);                                                                              \

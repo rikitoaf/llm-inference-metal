@@ -1,0 +1,183 @@
+--- runtime/metal/kernels/common/gguf_staged.h
++++ runtime/metal/kernels/common/gguf_staged.h
+@@ -5,6 +5,37 @@
+ // kernels/shared/moe_gguf.metal, through kernels/common/gguf_staged_tile.h),
+ // shared with the dequantization test. Includers set `#pragma clang fp
+ // reassociate(off)` first, so the source order of float operations holds here.
++
++// The staged tiles' threadgroup table tl, which every thread of the threadgroup fills (staged_table) before its first
++// dequant32: a codebook format's value pairs (quant_pair_table), or the grid words of IQ3_XXS (256) and IQ3_S (512).
++// Lanes look grid words up with divergent indices, which the constant address space, built for uniform reads,
++// serializes: with the grids there a 16-core M5 Pro streams IQ3_XXS at 138 GB/s and IQ3_S at 165 against Q4_K's 223
++// (one lane). The other grids, 2-8 KB, stay in the constant address space, as every grid does in the register tile.
++template <class F>
++constexpr uint staged_table_entries() {
++  return F::Kind == QuantCodebook ? kQuantPairTableEntries : F::Id == GGUF_FMT_IQ3XXS ? 256 : F::Id == GGUF_FMT_IQ3S ? 512 : 1;
++}
++// The run-time-format kernels' table, which holds any format's: IQ3_S's 512 words, 2 KB.
++constant constexpr uint kStagedTableEntries = 512;
++#define STAGED_TABLE_FITS(F, f) static_assert(staged_table_entries<F>() <= kStagedTableEntries, #f " table fits");
++QUANT_FORMATS(STAGED_TABLE_FITS)
++#undef STAGED_TABLE_FITS
++// tl's words = F's grid table `grid`.
++template <class F, uint N>
++inline void staged_grid_table(threadgroup half2 *tl, const constant uint (&grid)[N], uint thread_index, uint threads) {
++  static_assert(N == staged_table_entries<F>() && sizeof(half2) == sizeof(uint), "an entry of the table per grid word");
++  threadgroup uint *words = reinterpret_cast<threadgroup uint *>(tl);
++  for (uint i = thread_index; i < N; i += threads) words[i] = grid[i];
++  threadgroup_barrier(mem_flags::mem_threadgroup);
++}
++// Fills tl, of staged_table_entries<F>() entries, with F's table; called by all threads of the threadgroup.
++template <class F>
++inline void staged_table(threadgroup half2 *tl, uint thread_index, uint threads) {
++  if constexpr (F::Id == GGUF_FMT_IQ3XXS) staged_grid_table<F>(tl, kIQ3XXSGrid, thread_index, threads);
++  else if constexpr (F::Id == GGUF_FMT_IQ3S) staged_grid_table<F>(tl, kIQ3SGrid, thread_index, threads);
++  else quant_pair_table<F>(tl, thread_index, threads);
++}
++
+ // One thread writes one column's group of 32 (kernels/common/quant_formats.h) as half, each value rounded once;
+ // chunk c's pairs 0, 1 go to dst + 4c and pairs 2, 3 to dst + 16 + 4c.
+ template <class F>
+@@ -37,11 +68,21 @@
+       lo = half4(vec<S, 4>(as_type<char4>(v.x)) * S(k.s.x));
+       hi = half4(vec<S, 4>(as_type<char4>(v.y)) * S(k.s.y));
+     } else {
+-      const uint2 g = F::grid(q); const uint s = F::signs(q);
++      uint2 g;
++      if constexpr (staged_table_entries<F>() > 1) {   // IQ3_XXS, IQ3_S: the grid words staged_table put in tl
++        threadgroup const uint *grid = reinterpret_cast<threadgroup const uint *>(tl);
++        const uint2 i = F::gridIndex(q);
++        g = uint2(grid[i.x], grid[i.y]);
++      } else {
++        g = F::grid(q);
++      }
++      const uint s = F::signs(q);
+       lo = half4(float4(as_type<uchar4>(g.x)) * k.s.x);
+       hi = half4(float4(as_type<uchar4>(g.y)) * k.s.y);
+-      lo = select(lo, -lo, bool4(s & 1, s & 2, s & 4, s & 8));
+-      hi = select(hi, -hi, bool4(s & 16, s & 32, s & 64, s & 128));
++      // Sign bit j negates element j of lo (j < 4) or j - 4 of hi: XOR-ing a half's sign bit (bit 15 of its 16) is its
++      // negation, bit for bit, on the integer pipe rather than a select.
++      lo = as_type<half4>(as_type<uint2>(lo) ^ uint2(((s & 1u) << 15) | ((s & 2u) << 30), ((s & 4u) << 13) | ((s & 8u) << 28)));
++      hi = as_type<half4>(as_type<uint2>(hi) ^ uint2(((s & 16u) << 11) | ((s & 32u) << 26), ((s & 64u) << 9) | ((s & 128u) << 24)));
+     }
+     *((threadgroup half4 *)(dst + 4 * c)) = lo; *((threadgroup half4 *)(dst + 16 + 4 * c)) = hi;
+   }
+--- runtime/metal/kernels/common/gguf_staged_tile.h
++++ runtime/metal/kernels/common/gguf_staged_tile.h
+@@ -112,14 +112,14 @@
+   simdgroup_barrier(mem_flags::mem_threadgroup);   // the stage may be reused by a following accumulate
+ }
+ 
+-// runtime dequantizer selection (uniform per threadgroup): the format's pair table, which every thread of the
+-// threadgroup fills, then its tile loop
++// runtime dequantizer selection (uniform per threadgroup): the format's table (staged_table), which every thread of
++// the threadgroup fills, then its tile loop
+ template <ushort Rows, ushort Cols, ushort KS, class Acc>
+ inline void staged_accumulate_any(uint fmt, device bfloat *input, device uchar *w0, device uchar *w1, device uchar *meta, uint input_size, uint origin,
+                            threadgroup half *stage, threadgroup half2 *tl, uint thread_index, uint simd_lane, uint sb, uint se, thread Acc &acc) {
+   quant_format_switch(fmt, [&](auto format) {
+     typedef decltype(format) F;
+-    quant_pair_table<F>(tl, thread_index, GGUF_STAGED_THREADS);
++    staged_table<F>(tl, thread_index, GGUF_STAGED_THREADS);
+     staged_accumulate<F, Rows, Cols, KS>(input, w0, w1, meta, input_size, origin, stage, tl, simd_lane, sb, se, acc);
+   });
+ }
+--- runtime/metal/kernels/common/quant_formats.h
++++ runtime/metal/kernels/common/quant_formats.h
+@@ -30,7 +30,9 @@
+ //   (both with Scale, the narrowest type that holds s exactly)
+ //   QuantGrid      grid(Chunk) -> uint2, the grid magnitudes of pairs 0, 1
+ //                  (x) and 2, 3 (y); signs(Chunk) bit 2p + i negates element
+-//                  i of pair p; value = s * signed magnitude
++//                  i of pair p; value = s * signed magnitude (IQ3_XXS and
++//                  IQ3_S also gridIndex(Chunk) -> uint2, the indices of
++//                  grid's x and y words in their table)
+ enum QuantKind : ushort { QuantLinear, QuantCodebook, QuantInt8, QuantGrid };
+ 
+ // s.x scales and m.x offsets pairs 0, 1, s.y and m.y pairs 2, 3 (equal for
+@@ -214,7 +216,8 @@
+   static Meta loadMeta(device uchar *m) { return *((device ushort *)m); }
+   static Chunk chunk(Payload w, ushort c) { return w.a[c]; }
+   static Chunk loadChunk(device uchar *p0, device uchar *, ushort c) { return *((device uint *)(p0 + 4 * c)); }
+-  static uint2 grid(Chunk q) { return uint2(kIQ3SGrid[(q & 0xFF) | ((q >> 16) & 0x100)], kIQ3SGrid[((q >> 8) & 0xFF) | ((q >> 17) & 0x100)]); }
++  static uint2 gridIndex(Chunk q) { return uint2((q & 0xFF) | ((q >> 16) & 0x100), ((q >> 8) & 0xFF) | ((q >> 17) & 0x100)); }
++  static uint2 grid(Chunk q) { const uint2 i = gridIndex(q); return uint2(kIQ3SGrid[i.x], kIQ3SGrid[i.y]); }
+   static uint signs(Chunk q) { return (q >> 16) & 0xFF; }
+   static QuantCoef coef(Meta mt, Chunk q) { return {float2(float(as_type<half>(mt)) * float(1 + 2 * ((q >> 26) & 0xF)))}; }
+ };
+@@ -266,7 +269,8 @@
+     return ((w.a.x >> (8 * c)) & 0xFF) | ((w.a.y >> (8 * c)) & 0xFF) << 8 | quant_chunk_signs7(w.b, c) << 16 | (w.b >> 28) << 26;
+   }
+   static Chunk loadChunk(device uchar *p0, device uchar *p1, ushort c) { return chunk(load(p0, p1), c); }
+-  static uint2 grid(Chunk q) { return uint2(kIQ3XXSGrid[q & 0xFF], kIQ3XXSGrid[(q >> 8) & 0xFF]); }
++  static uint2 gridIndex(Chunk q) { return uint2(q & 0xFF, (q >> 8) & 0xFF); }
++  static uint2 grid(Chunk q) { const uint2 i = gridIndex(q); return uint2(kIQ3XXSGrid[i.x], kIQ3XXSGrid[i.y]); }
+   static uint signs(Chunk q) { return (q >> 16) & 0xFF; }
+   static QuantCoef coef(Meta mt, Chunk q) { return {float2(float(as_type<half>(mt)) * float(1 + 2 * ((q >> 26) & 0xF)) * 0.25f)}; }
+ };
+--- runtime/metal/kernels/shared/gguf_linear.metal
++++ runtime/metal/kernels/shared/gguf_linear.metal
+@@ -94,8 +94,8 @@
+                         device bfloat *aux [[buffer(7)]], constant GgufDecodeParams &p [[buffer(8)]],
+                         uint2 group [[threadgroup_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]],
+                         uint simd_group [[simdgroup_index_in_threadgroup]]) {
+-  threadgroup half2 tl[F::Kind == QuantCodebook ? kQuantPairTableEntries : 1];
+-  quant_pair_table<F>(tl, simd_group * 32 + simd_lane, GGUF_STAGED_THREADS);
++  threadgroup half2 tl[staged_table_entries<F>()];
++  staged_table<F>(tl, simd_group * 32 + simd_lane, GGUF_STAGED_THREADS);
+   threadgroup half stage[kStagedStages];
+   threadgroup uint arrival;
+   gguf_decode_tile<F, Rows, Ep>(input, w0, w1, meta, output, partials, counters, aux, p, group, simd_lane, simd_group,
+@@ -132,7 +132,7 @@
+                                      uint2 group [[threadgroup_position_in_grid]],                                \
+                                      uint simd_lane [[thread_index_in_simdgroup]],                                \
+                                      uint simd_group [[simdgroup_index_in_threadgroup]]) {                        \
+-    threadgroup half stage[kStagedStages]; threadgroup half2 tl[kQuantPairTableEntries]; threadgroup uint arrival; \
++    threadgroup half stage[kStagedStages]; threadgroup half2 tl[kStagedTableEntries]; threadgroup uint arrival;    \
+     const uint t0 = p.cols[0] / GGUF_TILE_COLUMNS, t1 = t0 + p.cols[1] / GGUF_TILE_COLUMNS;                        \
+     const uint s = group.x < t0 ? 0 : group.x < t1 ? 1 : 2;                                                       \
+     device uchar *w0 = s == 0 ? w0a : s == 1 ? w0b : w0c;                                                         \
+@@ -162,8 +162,8 @@
+   uint2 group [[threadgroup_position_in_grid]], uint simd_lane [[thread_index_in_simdgroup]],                      \
+       uint simd_group [[simdgroup_index_in_threadgroup]]
+ #define GGUF_PREFILL_TABLES(F)                                                                                     \
+-  threadgroup half2 tl[F::Kind == QuantCodebook ? kQuantPairTableEntries : 1];                                     \
+-  quant_pair_table<F>(tl, simd_group * 32 + simd_lane, GGUF_PREFILL_THREADS);                                      \
++  threadgroup half2 tl[staged_table_entries<F>()];                                                                 \
++  staged_table<F>(tl, simd_group * 32 + simd_lane, GGUF_PREFILL_THREADS);                                          \
+   threadgroup half stage[kPrefillStages]
+ #define GGUF_PREFILL(F, f)                                                                                         \
+   kernel void gguf_prefill_##f##_a(GGUF_PREFILL_BUFFERS, constant GgufPrefillParams &p [[buffer(5)]],            \
+--- runtime/metal/kernels/shared/moe_gguf.metal
++++ runtime/metal/kernels/shared/moe_gguf.metal
+@@ -50,7 +50,7 @@
+                             device bfloat *output [[buffer(9)]], device bfloat *aux [[buffer(10)]],
+                             constant MoeGgufExpertParams &p [[buffer(11)]], uint2 group [[threadgroup_position_in_grid]],
+                             uint simd_lane [[thread_index_in_simdgroup]], uint simd_group [[simdgroup_index_in_threadgroup]]) {
+-  threadgroup half stage[kStagedStages]; threadgroup half2 tl[kQuantPairTableEntries];
++  threadgroup half stage[kStagedStages]; threadgroup half2 tl[kStagedTableEntries];
+   moe_gguf_expert_tile<Rows, Ep>(input, tiles, tile_count, w0, w1, meta, sw0, sw1, smeta, output, aux, p, group,
+                                  simd_lane, simd_group, stage, tl);
+ }
+--- dev/tests/engine/gguf_dequant_test.metal
++++ dev/tests/engine/gguf_dequant_test.metal
+@@ -3,14 +3,16 @@
+ #include "metal/abi/Gguf.h"
+ #include "metal/kernels/common/gguf_staged.h"
+ 
++// lut is the staged tile's table, declared and filled as the per-format kernels declare and fill theirs
++// (kernels/shared/gguf_linear.metal): dequant32 reads IQ3_XXS's and IQ3_S's grid words from it.
+ #define DEQUANT_TEST(F, name) \
+ kernel void gguf_test_dequant_##name(device uchar *w0 [[buffer(0)]], \
+     device uchar *w1 [[buffer(1)]], device uchar *meta [[buffer(2)]], \
+     device half *output [[buffer(3)]], constant GgufDecodeParams &p [[buffer(4)]], \
+     uint tid [[thread_position_in_grid]], uint lane [[thread_index_in_threadgroup]]) { \
+   threadgroup half stage[32 * 32]; \
+-  threadgroup half2 lut[256]; \
+-  quant_pair_table<F>(lut, lane, 32); \
++  threadgroup half2 lut[staged_table_entries<F>()]; \
++  staged_table<F>(lut, lane, 32); \
+   const uint groups = p.input_size / 32, row = tid / groups, g = tid % groups; \
+   const ulong payload = quant_tile_index(row, g, groups); \
+   const ulong header = quant_tile_index(row, g / F::MetaGroups, groups / F::MetaGroups); \

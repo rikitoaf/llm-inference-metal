@@ -14,3 +14,10 @@ under the license of the project they belong to. The `splash/staged/` files are 
 
 The Swift 1.5 Qwen3.8-27B Uncensored model that README section 33 describes is not part of this repository.
 It is downloaded from Hugging Face under its own license (Swift Open License v1.0; Qwen3.8 is Apache 2.0).
+
+`plugins/dsh-plugin-guidelines/rules/karpathy.md` is a copy of `CLAUDE.md` from
+[forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (commit 2c60614, MIT
+License). `plugins/dsh-plugin-guidelines/rules/ponytail.md` is a copy of `AGENTS.md` from
+[DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) (commit 96608e0, MIT License, Copyright (c) 2026
+DietrichGebert), changed on 2026-11-04: two lines that contradict the Karpathy guidelines were removed and a precedence
+line was added. Both keep their original license.
